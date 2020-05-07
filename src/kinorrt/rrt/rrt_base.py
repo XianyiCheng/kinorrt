@@ -2,8 +2,8 @@ import random
 
 import numpy as np
 
-from src.rrt.tree import Tree
-from src.utilities.geometry import steer
+from .tree import Tree
+from ..utilities.geometry import steer
 
 
 class RRTBase(object):
@@ -151,8 +151,10 @@ class RRTBase(object):
         if x_init == x_goal:
             return path
         while not self.trees[tree].E[current] == x_init:
-            path.append(self.trees[tree].E[current])
+            #path.append(self.trees[tree].E[current])
+            path += self.trees[tree].path[current]
             current = self.trees[tree].E[current]
+        path += self.trees[tree].path[current]
         path.append(x_init)
         path.reverse()
         return path

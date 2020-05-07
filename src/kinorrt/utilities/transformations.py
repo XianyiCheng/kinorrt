@@ -23,8 +23,8 @@ def inv_g_2d(g):
 def compute_transformation(p,n):
     # print(p)
     # print(n)
-    p = p.flatten()
-    n = n.flatten()
+    p = np.array(p)
+    n = np.array(n)
     g = np.identity(3)
     R = np.array([[n[1],n[0]], [-n[0],n[1]]])
     g[0:2,0:2] = R
@@ -32,7 +32,7 @@ def compute_transformation(p,n):
     return g
 
 def config2trans(q):
-    q = q.flatten()
+    q = np.array(q)
     a = q[2]
     g = np.identity(3)
     R = np.array([[np.cos(a),-np.sin(a)],[np.sin(a), np.cos(a)]])

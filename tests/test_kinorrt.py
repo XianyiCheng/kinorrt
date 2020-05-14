@@ -18,6 +18,7 @@ from kinorrt.search_space import SearchSpace
 from kinorrt.rrt import RRTKinodynamic, RRTKino_w_modes
 from kinorrt.mechanics.contact_kinematics import *
 from contact_modes.modes_3d import enum_sliding_sticking_3d_proj
+import random
 
 OBJECT_SHAPE = [1.75, 1, 1.5, 0.75]
 HALLWAY_W = 2.5
@@ -111,6 +112,12 @@ class iTM2d(Application):
             self.collision_manager = corner()
         elif self.example == 'obstacle_course':
             self.collision_manager = obstacle_course()
+        elif self.example == 'peg-in-hole-v':
+            self.collision_manager = peg_in_hole_v()
+        elif self.example == 'peg-in-hole-p':
+            self.collision_manager = peg_in_hole_p()
+        elif self.example == 'book':
+            self.collision_manager = book()
         else:
             print('Cannot find collision manager!')
             raise
@@ -413,13 +420,15 @@ def DrawContactInObjectFrame(contact, obj_shader):
         glEnd()
 
 
-def test_kinorrt_cases(keyword = 'sofa'):
+def test_kinorrt_cases(keyword = 'sofa', max_samples = 100):
 
     viewer = Viewer()
     _itbl.loadOpenGL()
     manipulator = point_manipulator()
     mnp_fn_max = None
     step_length = 2
+    neighbor_r = 5
+    dist_cost = 1
 
     if keyword == 'sofa':
         neighbor_r = 5
@@ -450,7 +459,7 @@ def test_kinorrt_cases(keyword = 'sofa'):
         object_shape = [0.5,0.5,0.2,0.2]
         X_dimensions = np.array([(-8, 8), (0, 7 + object_shape[1]*4), (-np.pi, np.pi)])
         x_init = (4.5, 0.5, 0)
-        x_goal = (-3, 7.5, np.pi/2)
+        x_goal = (-3, 7.5, 0)
         world_key = 'vert'
         dist_weight = 1
         dist_cost = 0.2
@@ -478,8 +487,6 @@ def test_kinorrt_cases(keyword = 'sofa'):
         neighbor_r = 5
         object_shape = [0.5, 0.5, 0.2, 0.2]
         X_dimensions = np.array([(-2.5,3), (0, 4), (-2*np.pi, 2*np.pi)])
-        # x_init = (3, 0.5, 0)  # starting location
-        # x_goal = (0.707, 0.707, np.pi / 4)
         x_init = (-2.5, 1.5, 0)
         x_goal = (2.5, 1.5, 0)
         world_key = 'vert'
@@ -488,6 +495,40 @@ def test_kinorrt_cases(keyword = 'sofa'):
         manipulator = doublepoint_manipulator()
         mnp_fn_max = 6
         goal_kch = [1,1,0]
+    elif keyword == 'peg-in-hole-v':
+        object_shape = [0.45, 1, 0.2, 0.2]
+        X_dimensions = np.array([(-2, 1), (-2, 3), (-np.pi, np.pi)])
+        x_init = (-2,1,0)
+        x_goal = (0,-1,0)
+        world_key = 'vert'
+        dist_weight = 1
+        manipulator = doublepoint_manipulator()
+        mnp_fn_max = 50
+        goal_kch = [1, 1, 1]
+
+    elif keyword == 'peg-in-hole-p':
+        object_shape = [0.45, 1, 0.2, 0.2]
+        X_dimensions = np.array([(-2, 3), (0,2.5), (-np.pi, np.pi)])
+        x_init = (3,2.5,0)
+        x_goal = (-1,0.5,np.pi/2)
+        world_key = 'planar'
+        dist_weight = 1
+        manipulator = doublepoint_manipulator()
+        mnp_fn_max = 50
+        goal_kch = [1, 1, 1]
+
+    elif keyword == 'book':
+        object_shape = [1, 0.2, 0.2, 0.2]
+        X_dimensions = np.array([(-4.5, 4.5), (2, 3.5), (-2*np.pi, 2*np.pi)])
+        x_init = (0,2.2,0)
+        x_goal = (0,3,-np.pi/2)
+        world_key = 'vert'
+        dist_weight = 1
+        manipulator = doublepoint_manipulator()
+        mnp_fn_max = 6
+        goal_kch = [0.01, 0.1, 1]
+        allow_contact_edges = [True, False, True, False]
+
     else:
         print('Wrong case keyword!')
         raise
@@ -498,27 +539,25 @@ def test_kinorrt_cases(keyword = 'sofa'):
     viewer.init()
 
     X = SearchSpace(X_dimensions)
-    max_samples = 50  # max number of samples to take before timing out
 
-    the_object = part(app.target, object_shape)
+    if keyword == 'book':
+        the_object = part(app.target, object_shape, allow_contact_edges)
+    else:
+        the_object = part(app.target, object_shape)
 
-    kino_tree = RRTKino_w_modes(X, x_init, x_goal, environment(app.collision_manager), the_object, manipulator, max_samples, neighbor_r, world_key)
+    kino_tree = RRTKino_w_modes(X, x_init, x_goal, environment(app.collision_manager), the_object, manipulator,
+                                max_samples, neighbor_r, world_key)
     kino_tree.mnp_fn_max = mnp_fn_max
     kino_tree.dist_weight = dist_weight
     kino_tree.cost_weight[0] = dist_cost
     kino_tree.step_length = step_length
-    kino_tree.goal_kCh = goal_kch
+    kino_tree.goal_kch = goal_kch
 
     kino_tree.initialize_stability_margin_solver()
+
     t_start = time.time()
     path, mnp_path = kino_tree.search_bias()
     t_end = time.time()
-    print('time:', t_end - t_start)
-
-    # t_start = time.time()
-    # path = kino_tree.search()
-    # t_end = time.time()
-
     print('time:', t_end - t_start)
 
     app.get_path(path, mnp_path)
@@ -528,5 +567,7 @@ def test_kinorrt_cases(keyword = 'sofa'):
 
     return
 
-np.random.seed(10)
-ti = test_kinorrt_cases('obstacle_course')
+seed_number = 10
+random.seed(seed_number)
+np.random.seed(seed_number)
+ti = test_kinorrt_cases('book', max_samples=30)

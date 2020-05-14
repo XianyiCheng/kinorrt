@@ -4,6 +4,7 @@ from scipy.optimize import linprog
 from enum import Enum
 from contact_modes.modes_3d import enum_sliding_sticking_3d_proj
 from contact_modes.constraints import build_tangent_velocity_constraints_2d, build_normal_velocity_constraints_2d
+import gurobipy as gp
 
 debug = False
 
@@ -433,6 +434,34 @@ def qplcp(P, q, G, h, A, b):
     meq = A.shape[0]
     return solve_qp(qp_G, qp_a, qp_C, qp_b, meq)[0:3]
 
+def gurobi_solver(P, p, G, h, A, b):
+    n_var = p.shape[0]
+
+    p = p.flatten()
+    h = h.flatten()
+    b = b.flatten()
+    model = gp.Model('lp')
+
+    x = model.addVars(n_var,lb = -gp.GRB.INFINITY, name = 'x')
+
+    x_list = [x[i] for i in range(n_var)]
+    model.addMConstrs(A, x_list, '=', b)
+    model.addMConstrs(G, x_list, '>=', h)
+
+    model.setMObjective(P,-2*p,0.0,xQ_L=x_list, xQ_R=x_list, xc=x_list, sense = gp.GRB.MINIMIZE)
+    #model.setParam('BarHomogeneous',1)
+    model.setParam('OutputFlag', 0)
+    model.optimize()
+
+    ifsuccess = model.status == 2
+    if ifsuccess:
+        vars = model.getVars()
+        z = [vars[i].x for i in range(n_var)]
+    else:
+        z = None
+
+    return z, ifsuccess
+
 def inv_vert_2d(v, x, mnp, env, mnp_mu=0.5, env_mu=0.25, mnp_fn_max=None):
 
     """Solve inverse task mechanics for object motion in a 2d vertical world.
@@ -627,6 +656,7 @@ def inv_planar_2d(v, x, mnp, env, mnp_mu=0.5, env_mu=0.25):
 
     return v_o
 
+#@profile
 def qp_inv_mechanics_2d(v, x, mnp, env, mode, world, mnp_mu=0.8, env_mu=0.3, mnp_fn_max=None):
     """Solve inverse task mechanics for object motion in a 2d planar world.
     Arguments:
@@ -697,7 +727,8 @@ def qp_inv_mechanics_2d(v, x, mnp, env, mode, world, mnp_mu=0.8, env_mu=0.3, mnp
     # Solve.
     try:
         z, f, zu = qplcp(P, q, G.numpy(), h.numpy(), A.numpy(), b.numpy())
-        qss = 1
+        #zg, ifsuccess = gurobi_solver(P, q, G.numpy(), h.numpy(), A.numpy(), b.numpy())
+        #qss = 1
 
     except ValueError as e:
         pass
@@ -710,6 +741,7 @@ def qp_inv_mechanics_2d(v, x, mnp, env, mode, world, mnp_mu=0.8, env_mu=0.3, mnp
 
     return v_o
 
+#@profile
 def static_equilibrium(x, mnp, env, world, mnp_mu=0.8, env_mu=0.3, mnp_fn_max=None, mode = None):
     """test if there is a static equilibrium
     Arguments:
@@ -764,8 +796,10 @@ def static_equilibrium(x, mnp, env, world, mnp_mu=0.8, env_mu=0.3, mnp_fn_max=No
 
     # Solve.
     try:
-        res = linprog(np.zeros(n_z), A_ub=-G.numpy(), b_ub= -h.numpy(), A_eq = A.numpy(), b_eq = b.numpy())
-        ifsuccess = res.success
+        #gurobi_solver(np.zeros((n_z,n_z)), np.zeros(n_z), G.numpy(), h.numpy(), A.numpy(), b.numpy())
+        #res = linprog(np.zeros(n_z), A_ub=-G.numpy(), b_ub= -h.numpy(), A_eq = A.numpy(), b_eq = b.numpy())
+        qplcp(np.identity(n_z), np.zeros(n_z), G.numpy(), h.numpy(), A.numpy(), b.numpy())
+        ifsuccess = True #res.success
     except:
         ifsuccess = False
 

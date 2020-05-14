@@ -36,6 +36,10 @@ class RRTKinodynamic(RRTBase):
         self.x_goal = x_goal
         self.neighbor_radius = r
         self.world = world
+        if self.world == 'vert':
+            self.object_weight = 10
+        else:
+            self.object_weight = 0
         self.trees = []  # list of all trees
         self.add_tree()  # add initial tree
         self.environment = envir
@@ -200,6 +204,7 @@ class RRTKinodynamic(RRTBase):
         if self.swapped:
             self.swap_trees()
 
+    #@profile
     def resample_manipulator_contacts(self, tree, x):
         # mnp = self.object.sample_contacts(1)
         # ifReturn = True
@@ -216,11 +221,13 @@ class RRTKinodynamic(RRTBase):
                 # ifCollide, _ = self.environment.check_collision(self.manipulator, mnp_config)
                 ifCollide = self.manipulator.if_collide_w_env(self.environment, mnp_config, x)
                 ifReturn = isReachable and (not ifCollide)
+            return ifReturn, mnp, mnp_config
 
         else:
             counter = 0
             max_count = 4
-            while counter < max_count and (not ifReturn):
+            #ifReturn = False
+            while counter < max_count:
                 counter += 1
                 mnp = np.array([None]*num_manip)
                 # random find contacts that change
@@ -240,6 +247,9 @@ class RRTKinodynamic(RRTBase):
                         ifCollide = self.manipulator.if_collide_w_env(self.environment, mnp_config, x)
                         if not ifCollide:
                             ifReturn = True
+                            break
+        if ifReturn and mnp[0] is None:
+            print('sth wrong with resample manipulator contacts')
         return ifReturn, mnp, mnp_config
 
     def inverse_mechanics(self, x, v_star, envs, mnps):
@@ -463,7 +473,7 @@ class RRTKino_w_modes(RRTKinodynamic):
         current = x_goal
         mnp_path = [None]
         if x_init == x_goal:
-            return path
+            return path, mnp_path
         while not self.trees[tree].edges[current].parent == x_init:
             #path.append(self.trees[tree].E[current])
             n_nodes += 1
@@ -471,6 +481,7 @@ class RRTKino_w_modes(RRTKinodynamic):
             path += current_path
             mnp_path += [self.trees[tree].edges[current].manip]*len(current_path)
             current = self.trees[tree].edges[current].parent
+            print(current)
         current_path = self.trees[tree].edges[current].path
         path += current_path
         mnp_path += [self.trees[tree].edges[current].manip] * len(current_path)
@@ -539,11 +550,11 @@ class RRTKino_w_modes(RRTKinodynamic):
         #TODO: velocity-mode-projection: v_star = v_star*d_proj
         d_proj = velocity_project_direction(v_star, mnps, envs, mode)
         v_star_proj = np.dot(v_star,d_proj)*d_proj
-        while np.linalg.norm(v_star) > 1e-2 and counter < max_counter:
+        while np.linalg.norm(v_star_proj) > 1e-2 and counter < max_counter:
             counter += 1
             # v = self.inverse_mechanics(x, v_star, envs, mnps, mode)
 
-            v = self.inverse_mechanics(x, v_star, envs, mnps, mode)
+            v = self.inverse_mechanics(x, v_star_proj, envs, mnps, mode)
             if np.linalg.norm(v) < 1e-3:
                 break
 
@@ -588,11 +599,12 @@ class RRTKino_w_modes(RRTKinodynamic):
                 # return x backward at collisiton
                 depths = np.array([c.d for c in contacts])
                 max_i = np.argmax(depths)
-                d_max = np.max(depths)
+                d_max = np.max(-depths)
                 p_max = contacts[max_i].p
                 n_max = contacts[max_i].n
-                vs = np.dot(adjointTrans_2d(config2trans(x)), v)
-                v_p_max = np.dot(v_hat(vs), np.concatenate([p_max, [1]]))
+                #vs = np.dot(adjointTrans_2d(config2trans(x)), v)
+                #v_p_max = np.dot(v_hat(vs), np.concatenate([p_max, [1]]))
+                v_p_max = np.dot(v_hat(v), np.concatenate([p_max, [1]]))
                 k_new = 1 - d_max / abs(np.dot(v_p_max[0:2], n_max))
                 if abs(k_new) < 1:
                     v = k_new * v
@@ -611,6 +623,41 @@ class RRTKino_w_modes(RRTKinodynamic):
             print('something wrong')
 
         return tuple(x), path_, Status_manipulator_collide
+
+    def is_feasible_velocity(self, tree, x_near, x_rand, mode):
+        # check is there posive feasible velocity to the x-rand under this mode
+        envs = self.trees[tree].edges[x_near].env
+        mnps = self.trees[tree].edges[x_near].manip
+
+        x_rand = np.array(x_rand)
+        x_rand_ = x_rand[:]
+        x = np.array(x_near)
+        g_v = np.identity(3)
+        g_v[0:2, 0:2] = config2trans(x)[0:2, 0:2]
+
+        v_star = np.dot(g_v.T, x_rand - np.array(x))
+
+        if v_star[2] > 0:
+            x_rand_[2] = x_rand[2] - 2 * np.pi
+        else:
+            x_rand_[2] = x_rand[2] + 2 * np.pi
+
+        v_star_ = np.dot(g_v.T, x_rand_ - x)
+
+        if mnps is None:
+            if len(envs) == 0:
+                return True, v_star, v_star_
+            else:
+                mnps = []
+                mode = list(np.array(mode)[np.array(mode) != CONTACT_MODE.FOLLOWING])
+
+        d_proj = velocity_project_direction(v_star, mnps, envs, mode)
+        d_proj_ = velocity_project_direction(v_star_, mnps, envs, mode)
+
+        is_feasible = (np.linalg.norm(d_proj)> 1e-3) or (np.linalg.norm(d_proj_) > 1e-3)
+
+        return is_feasible, d_proj, d_proj_
+
 
     def extend_w_mode(self, tree, x_near, x_rand, mode):
         # Todo: use stability margin to choose ?
@@ -657,6 +704,7 @@ class RRTKino_w_modes(RRTKinodynamic):
 
         return x_new, status, edge
 
+    #@profile
     def extend_w_mode_bias(self, tree, x_near, x_rand, mode):
         # Todo: use stability margin to choose ?
 
@@ -701,11 +749,13 @@ class RRTKino_w_modes(RRTKinodynamic):
         edge = None
         if status != Status.TRAPPED:
             path.reverse()
-            edge = RRTEdge(x_near, mnps, envs, path, mode)
+            _, new_envs = self.check_collision(x_new)
+            edge = RRTEdge(x_near, mnps, new_envs, path, mode)
             edge.manipulator_collide = status_mnp_collide
 
         return x_new, status, edge, stability_margin_score
 
+    #@profile
     def extend_w_mode_changemnp(self, tree, x_near, x_rand, mode):
         # Todo: use stability margin to choose ?
 
@@ -747,6 +797,7 @@ class RRTKino_w_modes(RRTKinodynamic):
 
         return x_new, status, edge, stability_margin_score
 
+    #@profile
     def best_mnp_location(self, tree, x_near, x_rand, mode):
 
         n_sample = 10
@@ -764,7 +815,7 @@ class RRTKino_w_modes(RRTKinodynamic):
             mnps_list.append(mnps)
 
             score = self.smsolver.compute_stablity_margin(self.env_mu, self.mnp_mu, envs, mnps, mode,
-                                                          10, self.mnp_fn_max, self.dist_weight)
+                                                          self.object_weight, self.mnp_fn_max, self.dist_weight)
             score_list.append(score)
             v = self.inverse_mechanics(x_near, v_star, envs, mnps, mode)
             dist_list.append(self.dist(v, v_star))
@@ -898,6 +949,25 @@ class RRTKino_w_modes(RRTKinodynamic):
     #     print(self.dist(x_nearest, self.x_goal))
     #     return path
 
+    def add_waypoints_to_tree(self, tree, edge):
+        parent = edge.parent
+        path = edge.path[:]
+        path.reverse()
+        mode = edge.mode
+        mnps = edge.manip
+        d_i = int(len(path)/3)+1
+        i = d_i
+        while i < len(path):
+            x_new = path[i]
+            path_i = path[0:i+1]
+            path_i.reverse()
+            _, envs = self.check_collision(x_new)
+            all_modes = self.contact_modes(x_new, envs)
+            edge_ = RRTEdge(parent, mnps, envs, path_i, mode)
+            self.trees[tree].add(x_new, edge_)
+            self.trees[tree].add_mode_enum(x_new, all_modes)
+            i += d_i
+
     def search_star(self):
         _, envs = self.check_collision(self.x_init)
         edge = RRTEdge(None, None, envs, None, None)
@@ -973,6 +1043,7 @@ class RRTKino_w_modes(RRTKinodynamic):
         print('nearest state: ', x_nearest, ', dist: ', self.dist(x_nearest, self.x_goal))
         return path, mnp_path
 
+    #@profile
     def search_bias(self):
         _, envs = self.check_collision(self.x_init)
         edge = RRTEdge(None, None, envs, None, None)
@@ -980,19 +1051,10 @@ class RRTKino_w_modes(RRTKinodynamic):
         init_modes = self.contact_modes(self.x_init, envs)
         self.trees[0].add_mode_enum(self.x_init, init_modes)
 
-        # x_near = (0.6829629749145216, 1.9999999392151775, -1.5707962674487148)
-        # _, envs = self.check_collision(x_near)
-        # mnps = [Contact((-0.45, 0.5), (0, -1), 0), Contact((0.3,-0.5), (0,1), 0)]
-        # mode = [CONTACT_MODE.FOLLOWING, CONTACT_MODE.FOLLOWING, CONTACT_MODE.LIFT_OFF, CONTACT_MODE.STICKING]
-        # self.forward_integration(x_near, self.x_goal, envs, mnps, mode)
-
-
-        thr_stability = 0.1
         while self.samples_taken < self.max_samples:
             x_nearest, d_nearest = self.get_goal_nearest(0)
             if d_nearest < 0.04:
-                print('nearest state: ', x_nearest, ', dist: ', d_nearest)
-                print('GOAL REACHED.')
+                print('GOAL REACHED. Nearest state: ', x_nearest, ', dist: ', d_nearest)
                 path, mnp_path = self.reconstruct_path(0, self.x_init, x_nearest)
                 return path, mnp_path
 
@@ -1007,51 +1069,34 @@ class RRTKino_w_modes(RRTKinodynamic):
 
             trapped_status_list = []
             stability_score_list = []
-            _, envs = self.check_collision(x_near)
-            self.trees[0].edges[x_near].env = envs
-            near_modes = self.contact_modes(x_near, envs)
+
+            envs = self.trees[0].edges[x_near].env
+            near_modes = self.trees[0].enum_modes[x_near]
             for m in near_modes:
-                # TODO: use stability margin to biasly choose contact mode
-                x_new, status, edge, score = self.extend_w_mode_bias(0, x_near, x_rand, m)
-                stability_score_list.append(score)
-                trapped_status_list.append(status == Status.TRAPPED)
-                if status != Status.TRAPPED and self.dist(x_new, self.get_nearest(0,x_new)) > 1e-3:
+                is_feasible, v, v_ = self.is_feasible_velocity(0, x_near, x_rand, m)
+                if not is_feasible:
+                    #print('velocity infeasible for this mode')
+                    continue
+                elif self.trees[0].edges[x_near].manip is not None:
+                    v_pre = self.inverse_mechanics(x_near,v,envs, self.trees[0].edges[x_near].manip, m)
+                    v_pre_ = self.inverse_mechanics(x_near, v_, envs, self.trees[0].edges[x_near].manip, m)
+                    ifextend = np.linalg.norm(v_pre) > 1e-3 or np.linalg.norm(v_pre_) > 1e-3
+                else:
+                    ifextend = True
+
+                if ifextend:
+                    x_new, status, edge, score = self.extend_w_mode_bias(0, x_near, x_rand, m)
+                else:
+                    x_new, status, edge, score = self.extend_w_mode_changemnp(0, x_near, x_rand, m)
+                if status != Status.TRAPPED and self.dist(x_new, self.get_nearest(0, x_new)) > 1e-3:
                     self.trees[0].add(x_new, edge)
                     self.trees[0].add_mode_enum(x_new, self.contact_modes(x_new, edge.env))
                     self.samples_taken += 1
-                    print('sample ', self.samples_taken,', x: ', x_new)
-                    # add nodes on the path
-                    # d_i = int(len(edge.path)/3)+1
-                    # i = d_i
-                    # while i < len(edge.path):
-                    #     x_new = edge.path[i]
-                    #     _, envs = self.check_collision(x_new)
-                    #     edge_ = RRTEdge(x_near, edge.manip, envs, edge.path[0:i+1], edge.mode)
-                    #     self.trees[0].add(x_new, edge_)
-                    #     self.trees[0].add_mode_enum(x_new, self.contact_modes(x_new, edge_.env))
-                    #     i += d_i
-
-                else:
-                    # only if project velocity direction is positive
-                    x_new, status, edge, score = self.extend_w_mode_changemnp(0, x_near, x_rand, m)
-                    if status != Status.TRAPPED and self.dist(x_new, self.get_nearest(0,x_new)) > 1e-3:
-                        self.trees[0].add(x_new, edge)
-                        self.trees[0].add_mode_enum(x_new, self.contact_modes(x_new, edge.env))
-                        self.samples_taken += 1
-                        print('sample ', self.samples_taken, ', x: ',  x_new, 'change mnp')
-                        # add nodes on the path
-                        # d_i = int(len(edge.path) / 3) + 1
-                        # i = d_i
-                        # while i < len(edge.path):
-                        #     x_new = edge.path[i]
-                        #     _, envs = self.check_collision(x_new)
-                        #     edge_ = RRTEdge(x_near, edge.manip, envs, edge.path[0:i], edge.mode)
-                        #     self.trees[0].add(x_new, edge_)
-                        #     self.trees[0].add_mode_enum(x_new, self.contact_modes(x_new,edge_.env))
-                        #     i+=d_i
+                    print('sample ', self.samples_taken, ', x: ', x_new)
+                    self.add_waypoints_to_tree(0, edge)
 
         x_nearest, d_nearest = self.get_goal_nearest(0)
-        print('nearest state: ', x_nearest, ', dist: ', d_nearest)
+        print('GOAL NOT REACHED. Nearest state: ', x_nearest, ', dist: ', d_nearest)
         path, mnp_path = self.reconstruct_path(0, self.x_init, x_nearest)
 
         return path, mnp_path

@@ -81,9 +81,11 @@ class doublepoint_manipulator(object):
         return if_collide
 
 class part(object):
-    def __init__(self, obj, object_shape):
+    def __init__(self, obj, object_shape, allow_contact_edges = [True]*4):
         self.obj = obj
         self.object_shape = object_shape
+        sides = np.array([0,1,2,3])
+        self.sides = sides[allow_contact_edges]
 
     def update_config(self, x):
         T2 = config2trans(np.array(x))
@@ -107,10 +109,7 @@ class part(object):
         return contacts
 
     def sample_contacts(self, npts):
-        contacts = []
-        for i in range(npts):
-            contacts.append(sample_finger_contact_box(self.object_shape))
-        return contacts
+        return sample_finger_contact_box(self.object_shape, self.sides, npts)
 
 
 class environment(object):
@@ -138,39 +137,40 @@ class environment(object):
         return if_collide, contacts
 
 
-def sample_finger_contact_box(shape):
+def sample_finger_contact_box(shape, sides = [0,1,2,3], npts = 1):
     Half_L_outer = shape[0]
     Half_W_outer = shape[1]
     Half_L_inner = shape[2]
     Half_W_inner = shape[3]
 
-    side = np.random.randint(0, 4)
+    contacts = []
 
-    if side == 0:
-        n = np.array([0,-1])
-        p = np.array([2*Half_L_outer*(np.random.random() - 0.5), Half_W_outer])
-    elif side == 1:
-        n = np.array([-1,0])
-        p = np.array([Half_L_outer, 2*Half_W_outer*(np.random.random() - 0.5)])
-    elif side == 2:
-        n = np.array([0,1])
-        p = np.array([2*Half_L_outer*(np.random.random() - 0.5),-Half_W_outer])
-    elif side == 3:
-        n = np.array([1,0])
-        p = np.array([-Half_L_outer, 2*Half_W_outer*(np.random.random() - 0.5)])
-    elif side == 4:
-        n = np.array([0, 1])
-        p = np.array([ 2 * Half_L_inner * (np.random.random() - 0.5),Half_W_inner])
-    elif side == 5:
-        n = np.array([1, 0])
-        p = np.array([Half_L_inner,2 * Half_W_inner * (np.random.random() - 0.5)])
-    elif side == 6:
-        n = np.array([0, -1])
-        p = np.array([ 2 * Half_L_inner * (np.random.random() - 0.5), -Half_W_inner])
-    elif side == 7:
-        n = np.array([-1, 0])
-        p = np.array([-Half_L_inner, 2 * Half_W_inner * (np.random.random() - 0.5)])
-
-    contact = Contact(p,n,0.0)
-
-    return contact
+    finger_sides = np.random.choice(sides, npts)
+    for side in finger_sides:
+        if side == 0:
+            n = np.array([0,-1])
+            p = np.array([2*Half_L_outer*(np.random.random() - 0.5), Half_W_outer])
+        elif side == 1:
+            n = np.array([-1,0])
+            p = np.array([Half_L_outer, 2*Half_W_outer*(np.random.random() - 0.5)])
+        elif side == 2:
+            n = np.array([0,1])
+            p = np.array([2*Half_L_outer*(np.random.random() - 0.5),-Half_W_outer])
+        elif side == 3:
+            n = np.array([1,0])
+            p = np.array([-Half_L_outer, 2*Half_W_outer*(np.random.random() - 0.5)])
+        elif side == 4:
+            n = np.array([0, 1])
+            p = np.array([ 2 * Half_L_inner * (np.random.random() - 0.5),Half_W_inner])
+        elif side == 5:
+            n = np.array([1, 0])
+            p = np.array([Half_L_inner,2 * Half_W_inner * (np.random.random() - 0.5)])
+        elif side == 6:
+            n = np.array([0, -1])
+            p = np.array([ 2 * Half_L_inner * (np.random.random() - 0.5), -Half_W_inner])
+        elif side == 7:
+            n = np.array([-1, 0])
+            p = np.array([-Half_L_inner, 2 * Half_W_inner * (np.random.random() - 0.5)])
+        contact = Contact(p,n,0.0)
+        contacts.append(contact)
+    return contacts

@@ -39,6 +39,15 @@ class point_manipulator(object):
         if_collide = len(manifold0.depths) != 0
         return if_collide
 
+    def score_collide_w_env(self, envir, config, part_config):
+        self.update_config(config, part_config)
+        manifold0 = envir.collision_manager.collide(self.obj)
+        if len(manifold0.depths)  == 0:
+            score = 0.1
+        else:
+            score = np.min(manifold0.depths)
+        return score
+
 class doublepoint_manipulator(object):
     def __init__(self):
         self.obj = [RectangleBox(0.2,0.2), RectangleBox(0.2,0.2)]
@@ -79,6 +88,17 @@ class doublepoint_manipulator(object):
         manifold1 = envir.collision_manager.collide(self.obj[1])
         if_collide = (len(manifold0.depths) + len(manifold1.depths)) != 0
         return if_collide
+
+    def score_collide_w_env(self, envir, config, part_config):
+        self.update_config(config, part_config)
+        manifold0 = envir.collision_manager.collide(self.obj[0])
+        manifold1 = envir.collision_manager.collide(self.obj[1])
+        if (len(manifold0.depths) + len(manifold1.depths)) == 0:
+            score = 0.1
+        else:
+            d = list(manifold0.depths) + list(manifold1.depths)
+            score = np.min(d)
+        return score
 
 class part(object):
     def __init__(self, obj, object_shape, allow_contact_edges = [True]*4):

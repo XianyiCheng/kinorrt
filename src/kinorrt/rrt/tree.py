@@ -1,4 +1,4 @@
-from rtree import index
+#from rtree import index
 
 
 class Tree(object):

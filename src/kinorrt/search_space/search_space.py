@@ -2,7 +2,7 @@
 # file 'LICENSE', which is part of this source code package.
 
 import numpy as np
-from rtree import index
+#from rtree import index
 
 from ..utilities.geometry import es_points_along_line
 from ..utilities.obstacle_generation import obstacle_generator
@@ -25,18 +25,18 @@ class SearchSpace(object):
         if any(i[0] >= i[1] for i in dimension_lengths):
             raise Exception("Dimension start must be less than dimension end")
         self.dimension_lengths = dimension_lengths  # length of each dimension
-        p = index.Property()
-        p.dimension = self.dimensions
-        if O is None:
-            self.obs = index.Index(interleaved=True, properties=p)
-        else:
-            # r-tree representation of obstacles
-            # sanity check
-            if any(len(o) / 2 != len(dimension_lengths) for o in O):
-                raise Exception("Obstacle has incorrect dimension definition")
-            if any(o[i] >= o[int(i + len(o) / 2)] for o in O for i in range(int(len(o) / 2))):
-                raise Exception("Obstacle start must be less than obstacle end")
-            self.obs = index.Index(obstacle_generator(O), interleaved=True, properties=p)
+        #p = index.Property()
+        #p.dimension = self.dimensions
+        #if O is None:
+        #    self.obs = index.Index(interleaved=True, properties=p)
+        #else:
+        #    # r-tree representation of obstacles
+        #    # sanity check
+        #    if any(len(o) / 2 != len(dimension_lengths) for o in O):
+        #        raise Exception("Obstacle has incorrect dimension definition")
+        #    if any(o[i] >= o[int(i + len(o) / 2)] for o in O for i in range(int(len(o) / 2))):
+        #        raise Exception("Obstacle start must be less than obstacle end")
+        #    self.obs = index.Index(obstacle_generator(O), interleaved=True, properties=p)
 
     def obstacle_free(self, x):
         """
@@ -51,10 +51,12 @@ class SearchSpace(object):
         Sample a location within X_free
         :return: random location within X_free
         """
-        while True:  # sample until not inside of an obstacle
-            x = self.sample()
-            if self.obstacle_free(x):
-                return x
+	
+        #while True:  # sample until not inside of an obstacle
+        #    x = self.sample()
+        #    if self.obstacle_free(x):
+        #        return x
+        return self.sample()
 
     def collision_free(self, start, end, r):
         """

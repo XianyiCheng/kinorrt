@@ -4,7 +4,7 @@ from scipy.optimize import linprog
 from enum import Enum
 from contact_modes.modes_3d import enum_sliding_sticking_3d_proj
 from contact_modes.constraints import build_tangent_velocity_constraints_2d, build_normal_velocity_constraints_2d
-import gurobipy as gp
+#import gurobipy as gp
 
 debug = False
 

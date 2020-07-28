@@ -6,6 +6,7 @@ class StabilityMarginSolver():
     def __init__(self):
         self.eng = matlab.engine.start_matlab()
         self.eng.addpath('/home/xianyi/MATLAB Add-Ons/Toolboxes/tbxmanager')
+        #self.eng.addpath('/home/xianyi/Softwares/tbxmanager')
         self.eng.startup(nargout=0)
         root = '/home/xianyi/Dropbox/MLAB/PlanningThroughContact/ContactSeq_Planning/code/kinorrt/src/kinorrt/mechanics/prehensile_manipulation/matlab'
         self.eng.addpath(root)

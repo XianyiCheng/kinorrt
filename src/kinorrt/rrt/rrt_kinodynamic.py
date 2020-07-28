@@ -8,6 +8,7 @@ from ..mechanics.mechanics import *
 from ..mechanics.stability_margin import *
 from .tree import RRTTree, RRTEdge
 import time
+from scipy.integrate import solve_ivp
 
 class Status(enum.Enum):
     FAILED = 1
@@ -451,8 +452,8 @@ class RRTKinodynamic(RRTBase):
 
 class RRTKino_w_modes(RRTKinodynamic):
 
-    def initialize_stability_margin_solver(self):
-        self.smsolver = StabilityMarginSolver()
+    def initialize_stability_margin_solver(self, solver):
+        self.smsolver = solver
 
     def add_tree(self):
         """
@@ -481,7 +482,8 @@ class RRTKino_w_modes(RRTKinodynamic):
             path += current_path
             mnp_path += [self.trees[tree].edges[current].manip]*len(current_path)
             current = self.trees[tree].edges[current].parent
-            print(current)
+
+            print(current, self.trees[tree].edges[current].score)
         current_path = self.trees[tree].edges[current].path
         path += current_path
         mnp_path += [self.trees[tree].edges[current].manip] * len(current_path)
@@ -506,6 +508,12 @@ class RRTKino_w_modes(RRTKinodynamic):
         # TODO: number of manipulator contacts should change according to mnp types
         #_, envs = self.check_collision(x)
         modes = get_contact_modes([Contact([],[],None)]*self.manipulator.npts, envs)
+        return modes
+
+    def contact_modes_all(self, x, mnps, envs):
+        # TODO: number of manipulator contacts should change according to mnp types
+        #_, envs = self.check_collision(x)
+        modes = get_contact_modes(mnps + envs)
         return modes
 
     def inverse_mechanics(self, x, v_star, envs, mnps, mode):
@@ -549,7 +557,19 @@ class RRTKino_w_modes(RRTKinodynamic):
 
         #TODO: velocity-mode-projection: v_star = v_star*d_proj
         d_proj = velocity_project_direction(v_star, mnps, envs, mode)
+        if sum(d_proj) == 0:
+            d_proj = v_star/np.linalg.norm(v_star)
         v_star_proj = np.dot(v_star,d_proj)*d_proj
+
+        # finger mode
+        finger_mode = np.array(mode[0:len(mnps)])
+        if CONTACT_MODE.LIFT_OFF in finger_mode:
+            cm = len(mnps)
+            remain_idx = finger_mode != CONTACT_MODE.LIFT_OFF
+            mnps = list(np.array(mnps)[remain_idx])
+            finger_mode = finger_mode[remain_idx]
+            mode = list(finger_mode) + mode[cm:]
+
         while np.linalg.norm(v_star_proj) > 1e-2 and counter < max_counter:
             counter += 1
             # v = self.inverse_mechanics(x, v_star, envs, mnps, mode)
@@ -557,6 +577,16 @@ class RRTKino_w_modes(RRTKinodynamic):
             v = self.inverse_mechanics(x, v_star_proj, envs, mnps, mode)
             if np.linalg.norm(v) < 1e-3:
                 break
+
+            # finger mode
+            for i_finger in range(len(mnps)):
+                fm = finger_mode[i_finger]
+                if fm == CONTACT_MODE.SLIDING_LEFT:
+                    mnps[i_finger].p = []
+                    pass
+                elif fm == CONTACT_MODE.SLIDING_RIGHT:
+                    mnps[i_finger].p = []
+                    pass
 
             # check collision
             x_ = x.flatten() + np.dot(g_v, v).flatten()
@@ -624,6 +654,117 @@ class RRTKino_w_modes(RRTKinodynamic):
 
         return tuple(x), path_, Status_manipulator_collide
 
+    def diff_fun(self, t, x, x_rand, envs, mnps, mode):
+        g_v = np.identity(3)
+        g_v[0:2, 0:2] = config2trans(x)[0:2, 0:2]
+        v_star = np.dot(g_v.T, x_rand - np.array(x))
+        v = self.inverse_mechanics(x, v_star, envs, mnps, mode)
+        dx = np.dot(g_v, v).flatten()
+        return dx
+
+    def object_collision_score(self, x, x_rand, envs, mnps, mode):
+        if_collide, contacts = self.check_collision(x)
+        depths = np.array([c.d for c in contacts])
+        depths = depths[depths < -0.05]
+        score = np.sum(depths)
+        if score == 0:
+            score = 0.05
+        return score
+
+    def manipulator_collision_score(self, x, x_rand, envs, mnps, mode):
+        _, mnp_config = self.manipulator.inverse_kinematics(mnps)
+        score = self.manipulator.score_collide_w_env(self.environment, mnp_config, x)
+        return score
+
+    def lift_off_score(self, x, x_rand, envs, mnps, mode):
+        m = np.array(mode[len(mnps):])
+        lift_off_ind = np.array(m) == CONTACT_MODE.LIFT_OFF
+        if sum(lift_off_ind) == 0:
+            score = 0.1
+        else:
+            if_collide, contacts = self.check_collision(x)
+            if len(envs) != len(contacts):
+                score = 0.05
+            else:
+                lift_contacts = np.array(contacts)[lift_off_ind]
+                score = np.max([c.d for c in lift_contacts]) - 0.015
+        return score
+
+    def forward_integration_ode_solver(self, x_near, x_rand, envs, mnps, mode):
+        Status_manipulator_collide = False
+
+        x_rand = np.array(x_rand)
+        x = np.array(x_near)
+        path = [tuple(x)]
+        g_v = np.identity(3)
+        g_v[0:2,0:2] = config2trans(x)[0:2, 0:2]
+
+        v_star = np.dot(g_v.T, x_rand - np.array(x))
+
+        v = self.inverse_mechanics(x, v_star, envs, mnps, mode)
+        if np.linalg.norm(v) < 1e-3:
+            if v_star[2] > 0:
+                x_rand[2] = x_rand[2] - 2*np.pi
+            else:
+                x_rand[2] = x_rand[2] + 2 * np.pi
+            v_star = np.dot(g_v.T, x_rand - np.array(x))
+            v = self.inverse_mechanics(x, v_star, envs, mnps, mode)
+            if np.linalg.norm(v) < 1e-3:
+                return tuple(x), path, Status_manipulator_collide
+
+        d_proj = velocity_project_direction(v_star, mnps, envs, mode)
+        v_star_proj = np.dot(v_star,d_proj)*d_proj
+
+        def object_collision(t_, x_, x_rand_, envs_, mnps_, mode_):
+            return self.object_collision_score(x_, x_rand_, envs_, mnps_, mode_)
+        object_collision.terminal = True
+        object_collision.direction = -1.0
+
+        def manipulator_collision(t_, x_, x_rand_, envs_, mnps_, mode_):
+            return self.manipulator_collision_score(x_, x_rand_, envs_, mnps_, mode_)
+        manipulator_collision.terminal = True
+        manipulator_collision.direction = -1.0
+
+        def lift_off(t_, x_, x_rand_, envs_, mnps_, mode_):
+            return self.lift_off_score(x_, x_rand_, envs_, mnps_, mode_)
+        lift_off.terminal = True
+        lift_off.direction = 1.0
+
+        t_start = 0
+        t_end = 2
+        y0 = x
+
+        while t_start < t_end:
+            t_span = (t_start, t_end)
+
+            sol = solve_ivp(self.diff_fun, t_span, np.array(y0), method='RK23', args = (x_rand, envs, mnps, mode),
+                            events = (lift_off, object_collision, manipulator_collision))
+
+            # get path and new y0
+            t_start = sol.t[-1]
+            path = path + [tuple(y_) for y_ in sol.y.T]
+            y0 = tuple(sol.y[:,-1])
+
+            if sol.status == 0 or sol.status == -1: # The solver successfully reached the end of tspan.
+                break
+            elif sol.status == 1: # A termination event occurred.
+
+                event_id = np.where([len(te) for te in sol.t_events])[0][0]
+
+                if event_id == 0: # lift off
+                    _, new_envs = self.check_collision(y0)
+                    envs = new_envs
+                    mode = list(np.array(mode)[np.array(mode) != CONTACT_MODE.LIFT_OFF])
+                elif event_id == 1: # object collision
+                    break
+                elif event_id == 2: # manipulator collision
+                    Status_manipulator_collide = True
+                    break
+        dp = 0.1*np.array(range(0,10))
+        #path = np.array([x[0]+(y0[0]-x[0])*dp,x[1]+(y0[1]-x[1])*dp, x[2]+(y0[2]-x[2])*dp])
+        #path = [tuple(y_) for y_ in path.T]
+        return tuple(y0), path, Status_manipulator_collide
+
     def is_feasible_velocity(self, tree, x_near, x_rand, mode):
         # check is there posive feasible velocity to the x-rand under this mode
         envs = self.trees[tree].edges[x_near].env
@@ -644,12 +785,12 @@ class RRTKino_w_modes(RRTKinodynamic):
 
         v_star_ = np.dot(g_v.T, x_rand_ - x)
 
+        if len(envs) == 0:
+            return True, v_star, v_star_
         if mnps is None:
-            if len(envs) == 0:
-                return True, v_star, v_star_
-            else:
-                mnps = []
-                mode = list(np.array(mode)[np.array(mode) != CONTACT_MODE.FOLLOWING])
+            mnps = []
+            mode = mode[(len(mode) - len(envs)):]
+
 
         d_proj = velocity_project_direction(v_star, mnps, envs, mode)
         d_proj_ = velocity_project_direction(v_star_, mnps, envs, mode)
@@ -657,7 +798,6 @@ class RRTKino_w_modes(RRTKinodynamic):
         is_feasible = (np.linalg.norm(d_proj)> 1e-3) or (np.linalg.norm(d_proj_) > 1e-3)
 
         return is_feasible, d_proj, d_proj_
-
 
     def extend_w_mode(self, tree, x_near, x_rand, mode):
         # Todo: use stability margin to choose ?
@@ -685,6 +825,7 @@ class RRTKino_w_modes(RRTKinodynamic):
 
         # forward (ITM)
         x_new, path, status_mnp_collide = self.forward_integration(x_near, x_rand, envs, mnps, mode)
+        x_new1, path1, status_mnp_collide1 = self.forward_integration_ode_solver(x_near, x_rand, envs, mnps, mode)
         path.reverse()
         x_new = tuple(x_new)
 
@@ -726,16 +867,17 @@ class RRTKino_w_modes(RRTKinodynamic):
         if mnps is None:
             return x_near, Status.TRAPPED, None, 0.0
 
-        #stability_margin_score = self.smsolver.compute_stablity_margin(self.env_mu, self.mnp_mu, envs, mnps, mode, 10, self.mnp_fn_max, self.dist_weight)
-        stability_margin_score = 0.0
+        stability_margin_score = self.smsolver.compute_stablity_margin(self.env_mu, self.mnp_mu, envs, mnps, mode,
+                                                          self.object_weight, self.mnp_fn_max, self.dist_weight)
         # forward (ITM)
         # time1 = time.time()
         x_new, path, status_mnp_collide = self.forward_integration(x_near, x_rand, envs, mnps, mode)
+        #x_new, path, status_mnp_collide = self.forward_integration_ode_solver(x_near, x_rand, envs, mnps, mode)
         # if len(mode) == 5:
         #     x_new, path, status_mnp_collide = self.forward_integration(x_near, x_rand, envs, [Contact((0.5,0),(-1,0),0)], mode)
         # time2 = time.time()
         # print('forward integration: ',time2-time1, 'dx:', np.array(x_new) - np.array(x_near), 'dx_desire', np.array(x_rand) - np.array(x_near))
-
+        # print('x_new: ', x_new, ' x_new1: ', x_new1)
         x_new = tuple(x_new)
 
         if self.dist(x_near, x_new) < 1e-3:
@@ -752,6 +894,7 @@ class RRTKino_w_modes(RRTKinodynamic):
             _, new_envs = self.check_collision(x_new)
             edge = RRTEdge(x_near, mnps, new_envs, path, mode)
             edge.manipulator_collide = status_mnp_collide
+            edge.score = stability_margin_score
 
         return x_new, status, edge, stability_margin_score
 
@@ -772,9 +915,9 @@ class RRTKino_w_modes(RRTKinodynamic):
         if mnps is None:
             return x_near, Status.TRAPPED, None, 0.0
 
-        stability_margin_score = 0.0
-        #self.smsolver.compute_stablity_margin(self.env_mu, self.mnp_mu, envs, mnps, mode, 10,
-        #                                                               self.mnp_fn_max, self.dist_weight)
+        stability_margin_score = self.smsolver.compute_stablity_margin(self.env_mu, self.mnp_mu, envs, mnps, mode,
+                                                                       self.object_weight, self.mnp_fn_max,
+                                                                       self.dist_weight)
 
         # forward (ITM)
         x_new, path, status_mnp_collide = self.forward_integration(x_near, x_rand, envs, mnps, mode)
@@ -794,6 +937,7 @@ class RRTKino_w_modes(RRTKinodynamic):
             _, envs = self.check_collision(x_new)
             edge = RRTEdge(x_near, mnps, envs, path, mode)
             edge.manipulator_collide = status_mnp_collide
+            edge.score = stability_margin_score
 
         return x_new, status, edge, stability_margin_score
 
@@ -956,16 +1100,16 @@ class RRTKino_w_modes(RRTKinodynamic):
         mode = edge.mode
         mnps = edge.manip
         d_i = int(len(path)/3)+1
+        #print(len(path))
         i = d_i
         while i < len(path):
             x_new = path[i]
             path_i = path[0:i+1]
             path_i.reverse()
             _, envs = self.check_collision(x_new)
-            all_modes = self.contact_modes(x_new, envs)
             edge_ = RRTEdge(parent, mnps, envs, path_i, mode)
+            edge_.score = edge.score
             self.trees[tree].add(x_new, edge_)
-            self.trees[tree].add_mode_enum(x_new, all_modes)
             i += d_i
 
     def search_star(self):
@@ -1044,11 +1188,11 @@ class RRTKino_w_modes(RRTKinodynamic):
         return path, mnp_path
 
     #@profile
-    def search_bias(self):
-        _, envs = self.check_collision(self.x_init)
-        edge = RRTEdge(None, None, envs, None, None)
+    def search_bias(self, init_mnp = None):
+        _, init_envs = self.check_collision(self.x_init)
+        edge = RRTEdge(None, init_mnp, init_envs, None, None)
         self.trees[0].add(self.x_init, edge)
-        init_modes = self.contact_modes(self.x_init, envs)
+        init_modes = self.contact_modes(self.x_init, init_envs)
         self.trees[0].add_mode_enum(self.x_init, init_modes)
 
         while self.samples_taken < self.max_samples:
@@ -1067,19 +1211,80 @@ class RRTKino_w_modes(RRTKinodynamic):
                 x_near = self.get_unexpand_nearest(0)
                 self.trees[0].goal_expand[x_near] = True
 
-            trapped_status_list = []
-            stability_score_list = []
+            near_envs = self.trees[0].edges[x_near].env
+            if x_near in self.trees[0].enum_modes:
+                near_modes = self.trees[0].enum_modes[x_near]
+            else:
+                near_modes = self.contact_modes(x_near, near_envs)
+                self.trees[0].add_mode_enum(x_near, near_modes)
 
-            envs = self.trees[0].edges[x_near].env
-            near_modes = self.trees[0].enum_modes[x_near]
             for m in near_modes:
                 is_feasible, v, v_ = self.is_feasible_velocity(0, x_near, x_rand, m)
                 if not is_feasible:
                     #print('velocity infeasible for this mode')
                     continue
                 elif self.trees[0].edges[x_near].manip is not None:
-                    v_pre = self.inverse_mechanics(x_near,v,envs, self.trees[0].edges[x_near].manip, m)
-                    v_pre_ = self.inverse_mechanics(x_near, v_, envs, self.trees[0].edges[x_near].manip, m)
+                    v_pre = self.inverse_mechanics(x_near,v, near_envs, self.trees[0].edges[x_near].manip, m)
+                    v_pre_ = self.inverse_mechanics(x_near, v_, near_envs, self.trees[0].edges[x_near].manip, m)
+                    ifextend = np.linalg.norm(v_pre) > 1e-3 or np.linalg.norm(v_pre_) > 1e-3
+                else:
+                    ifextend = True
+
+                if ifextend:
+                    x_new, status, edge, score = self.extend_w_mode_bias(0, x_near, x_rand, m)
+                else:
+                    x_new, status, edge, score = self.extend_w_mode_changemnp(0, x_near, x_rand, m)
+                if status != Status.TRAPPED and self.dist(x_new, self.get_nearest(0, x_new)) > 1e-3:
+
+                    self.trees[0].add(x_new, edge)
+                    self.samples_taken += 1
+                    print('sample ', self.samples_taken, ', x: ', x_new, 'mode', m, 'score', score)
+                    self.add_waypoints_to_tree(0, edge)
+
+        x_nearest, d_nearest = self.get_goal_nearest(0)
+        print('GOAL NOT REACHED. Nearest state: ', x_nearest, ', dist: ', d_nearest)
+        path, mnp_path = self.reconstruct_path(0, self.x_init, x_nearest)
+
+        return path, mnp_path
+
+    def search_all_modes(self):
+        _, init_envs = self.check_collision(self.x_init)
+        edge = RRTEdge(None, None, init_envs, None, None)
+        self.trees[0].add(self.x_init, edge)
+        init_modes = self.contact_modes(self.x_init, init_envs)
+        self.trees[0].add_mode_enum(self.x_init, init_modes)
+
+        while self.samples_taken < self.max_samples:
+            x_nearest, d_nearest = self.get_goal_nearest(0)
+            if d_nearest < 0.04:
+                print('GOAL REACHED. Nearest state: ', x_nearest, ', dist: ', d_nearest)
+                path, mnp_path = self.reconstruct_path(0, self.x_init, x_nearest)
+                return path, mnp_path
+
+            if random.randint(0,3) == 0:
+                #x_rand = self.x_goal
+                x_rand = self.X.sample_free()
+                x_near = self.get_nearest(0, x_rand)
+            else:
+                x_rand = self.x_goal
+                x_near = self.get_unexpand_nearest(0)
+                self.trees[0].goal_expand[x_near] = True
+
+            near_envs = self.trees[0].edges[x_near].env
+            if x_near in self.trees[0].enum_modes:
+                near_modes = self.trees[0].enum_modes[x_near]
+            else:
+                near_modes = self.contact_modes_all(x_near,self.trees[0].edges[x_near].manip, near_envs)
+                self.trees[0].add_mode_enum(x_near, near_modes)
+
+            for m in near_modes:
+                is_feasible, v, v_ = self.is_feasible_velocity(0, x_near, x_rand, m)
+                if not is_feasible:
+                    #print('velocity infeasible for this mode')
+                    continue
+                elif self.trees[0].edges[x_near].manip is not None:
+                    v_pre = self.inverse_mechanics(x_near,v, near_envs, self.trees[0].edges[x_near].manip, m)
+                    v_pre_ = self.inverse_mechanics(x_near, v_, near_envs, self.trees[0].edges[x_near].manip, m)
                     ifextend = np.linalg.norm(v_pre) > 1e-3 or np.linalg.norm(v_pre_) > 1e-3
                 else:
                     ifextend = True
@@ -1090,7 +1295,6 @@ class RRTKino_w_modes(RRTKinodynamic):
                     x_new, status, edge, score = self.extend_w_mode_changemnp(0, x_near, x_rand, m)
                 if status != Status.TRAPPED and self.dist(x_new, self.get_nearest(0, x_new)) > 1e-3:
                     self.trees[0].add(x_new, edge)
-                    self.trees[0].add_mode_enum(x_new, self.contact_modes(x_new, edge.env))
                     self.samples_taken += 1
                     print('sample ', self.samples_taken, ', x: ', x_new)
                     self.add_waypoints_to_tree(0, edge)

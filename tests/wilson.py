@@ -230,19 +230,3 @@ def unpacking():
 
     return manager
 
-def in_hand():
-    manager = _itbl.CollisionManager2D()
-
-    wall1 = _itbl.Rectangle(0.4, 1, 2, 0.05)
-    wall2 = _itbl.Rectangle(0.4, 1, 2, 0.05)
-    wall0 = _itbl.Rectangle(4, 0.4, 2, 0.05)
-
-    wall1.transform()[0:3, 3] = np.array([-0.6, 0.5 , 0]).reshape(wall1.transform()[0:3, 3].shape)
-    wall2.transform()[0:3, 3] = np.array([0.6, 0.5, 0]).reshape(wall2.transform()[0:3, 3].shape)
-    wall0.transform()[0:3, 3] = np.array([0, 1.2, 0]).reshape(wall0.transform()[0:3, 3].shape)
-
-    manager.add(wall1)
-    manager.add(wall2)
-    manager.add(wall0)
-
-    return manager

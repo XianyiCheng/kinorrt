@@ -15,11 +15,10 @@ import itbl._itbl as _itbl
 import time
 
 from kinorrt.search_space import SearchSpace
-from kinorrt.rrt import RRTKinodynamic, RRTKino_w_modes
 from kinorrt.mechanics.contact_kinematics import *
-from contact_modes.modes_3d import enum_sliding_sticking_3d_proj
 import random
 from kinorrt.mechanics.stability_margin import *
+from kinorrt.rrt import RRTManipulation
 
 OBJECT_SHAPE = [1.75, 1, 1.5, 0.75]
 HALLWAY_W = 2.5
@@ -42,7 +41,6 @@ def config2trans(q):
     g[0:2,0:2] = R
     g[0:2,-1] = q[0:2]
     return g
-
 
 
 class iTM2d(Application):
@@ -766,31 +764,33 @@ def test_kinorrt_cases(stability_solver, keyword = 'sofa', max_samples = 100):
 
     if keyword == 'book':
         the_object = part(app.target, object_shape, allow_contact_edges)
+    elif keyword == 'in-hand':
+        the_object = inhand_part(app.target)
     else:
         the_object = part(app.target, object_shape)
 
-    kino_tree = RRTKino_w_modes(X, x_init, x_goal, environment(app.collision_manager), the_object, manipulator,
+    rrt_tree = RRTManipulation(X, x_init, x_goal, environment(app.collision_manager), the_object, manipulator,
                                 max_samples, neighbor_r, world_key)
-    kino_tree.mnp_fn_max = mnp_fn_max
-    kino_tree.dist_weight = dist_weight
-    kino_tree.cost_weight[0] = dist_cost
-    kino_tree.step_length = step_length
-    kino_tree.goal_kch = goal_kch
+    rrt_tree.mnp_fn_max = mnp_fn_max
+    rrt_tree.dist_weight = dist_weight
+    rrt_tree.cost_weight[0] = dist_cost
+    rrt_tree.step_length = step_length
+    rrt_tree.goal_kch = goal_kch
 
-    kino_tree.initialize_stability_margin_solver(stability_solver)
+    rrt_tree.initialize_stability_margin_solver(stability_solver)
 
     t_start = time.time()
     if keyword == 'in-hand':
         init_mnp = [Contact((-1,0),(1,0),0),Contact((-1,0),(1,0),0)]
-        path, mnp_path = kino_tree.search_bias(init_mnp)
+        path, mnp_path = rrt_tree.search(init_mnp)
     else:
-        path, mnp_path = kino_tree.search_bias()
+        path, mnp_path = rrt_tree.search()
     t_end = time.time()
     print('time:', t_end - t_start)
 
     app.get_path(path, mnp_path)
-    app.get_nodes(kino_tree.trees[0].nodes)
-    app.get_tree(kino_tree)
+    app.get_nodes(rrt_tree.trees[0].nodes)
+    app.get_tree(rrt_tree)
     viewer.start()
 
     return

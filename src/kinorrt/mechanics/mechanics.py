@@ -1,6 +1,8 @@
 import numpy as np
-from quadprog import solve_qp
-from scipy.optimize import linprog
+#from quadprog import solve_qp
+#from scipy.optimize import linprog
+from qpsolvers import solve_qp
+
 from enum import Enum
 from contact_modes.modes_3d import enum_sliding_sticking_3d_proj
 from contact_modes.constraints import build_tangent_velocity_constraints_2d, build_normal_velocity_constraints_2d
@@ -81,7 +83,7 @@ def config2trans(q):
     return g
 
 def twist_to_transform(x):
-    x = x.reshape((3,1))
+    x = np.array(x).reshape((3,1))
     c = np.cos(x[2,0])
     s = np.sin(x[2,0])
 
@@ -426,13 +428,21 @@ def add_fm_balance_planar_2d(x, Ad_gcos, mus, A, b):
         b.add(0,r+ii,0)
     return
 
-def qplcp(P, q, G, h, A, b):
+def qplcp_quadprog(P, q, G, h, A, b):
     qp_G = 0.5 * (P + P.T) # make sure P is symmetric
     qp_a = q.flatten()
     qp_C = np.concatenate([A, G], axis=0).T
     qp_b = np.concatenate([b, h], axis=0).flatten()
     meq = A.shape[0]
     return solve_qp(qp_G, qp_a, qp_C, qp_b, meq)[0:3]
+
+def qplcp(P, q, G, h, A, b):
+    P = 0.5 * (P + P.T) # make sure P is symmetric
+    q = q.flatten()
+    h = h.flatten()
+    b = b.flatten()
+
+    return solve_qp(P, q, -G, -h, A, b)
 
 def gurobi_solver(P, p, G, h, A, b):
     n_var = p.shape[0]
@@ -540,7 +550,7 @@ def inv_vert_2d(v, x, mnp, env, mnp_mu=0.5, env_mu=0.25, mnp_fn_max=None):
 
         # Solve.
         try:
-            z, f, zu = qplcp(P, q, G.numpy(), h.numpy(), A.numpy(), b.numpy())
+            z= qplcp(P, q, G.numpy(), h.numpy(), A.numpy(), b.numpy())
             qss = 1
 
             if debug:
@@ -548,7 +558,7 @@ def inv_vert_2d(v, x, mnp, env, mnp_mu=0.5, env_mu=0.25, mnp_fn_max=None):
                 print(G.numpy())
                 print(A.numpy())
 
-        except ValueError as e:
+        except:
             pass
         else:
             z_o = z[0:3]
@@ -631,7 +641,7 @@ def inv_planar_2d(v, x, mnp, env, mnp_mu=0.5, env_mu=0.25):
 
         # Solve.
         try:
-            z, f, zu = qplcp(P, q, G.numpy(), h.numpy(), A.numpy(), b.numpy())
+            z = qplcp(P, q, G.numpy(), h.numpy(), A.numpy(), b.numpy())
             qss = 1
 
             if debug:
@@ -726,11 +736,11 @@ def qp_inv_mechanics_2d(v, x, mnp, env, mode, world, mnp_mu=0.8, env_mu=0.3, mnp
 
     # Solve.
     try:
-        z, f, zu = qplcp(P, q, G.numpy(), h.numpy(), A.numpy(), b.numpy())
+        z = qplcp(P, q, G.numpy(), h.numpy(), A.numpy(), b.numpy())
         #zg, ifsuccess = gurobi_solver(P, q, G.numpy(), h.numpy(), A.numpy(), b.numpy())
         #qss = 1
 
-    except ValueError as e:
+    except:
         pass
         #print('Quadprog no solution')
     else:
@@ -856,12 +866,12 @@ def velocity_project_direction(v, mnp, env, mode, mnp_mu=0.8, env_mu=0.3):
 
     # Solve.
     try:
-        z, f, zu = qplcp(P, q, G, h, A, b)
+        z = qplcp(P, q, G, h, A, b)
         if np.linalg.norm(z) < 1e-3:
             d_proj = z
         else:
             d_proj = z / np.linalg.norm(z)
-    except ValueError as e:
+    except:
         d_proj = np.zeros(3)
 
     return d_proj

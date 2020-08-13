@@ -49,9 +49,10 @@ class point_manipulator(object):
         return score
 
 class doublepoint_manipulator(object):
-    def __init__(self):
+    def __init__(self, config_bounds = None):
         self.obj = [RectangleBox(0.2,0.2), RectangleBox(0.2,0.2)]
         self.npts = 2
+        self.config_bounds = config_bounds
     def contacts2mnpframe(self, w_contacts, x):
         return None
 
@@ -87,6 +88,13 @@ class doublepoint_manipulator(object):
         manifold0 = envir.collision_manager.collide(self.obj[0])
         manifold1 = envir.collision_manager.collide(self.obj[1])
         if_collide = (len(manifold0.depths) + len(manifold1.depths)) != 0
+        if self.config_bounds is not None:
+            p1 = self.obj[0].transform()[0:2,-1]
+            p2 = self.obj[1].transform()[0:2,-1]
+            p = np.array(list(p1) + list(p2))
+            if np.any(p < self.config_bounds[0]) or np.any(p > self.config_bounds[1]):
+                if_collide = True
+
         return if_collide
 
     def score_collide_w_env(self, envir, config, part_config):
@@ -130,7 +138,6 @@ class part(object):
 
     def sample_contacts(self, npts):
         return sample_finger_contact_box(self.object_shape, self.sides, npts)
-
 
 class environment(object):
     def __init__(self, collision_manager):

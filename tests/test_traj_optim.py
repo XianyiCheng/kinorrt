@@ -10,6 +10,7 @@ from itbl.shapes import Box
 from itbl.util import get_color, get_data
 from itbl.viewer import Application, Viewer
 from itbl.viewer.backend import *
+from wilson import *
 import itbl._itbl as _itbl
 import time
 
@@ -18,6 +19,7 @@ from kinorrt.mechanics.contact_kinematics import *
 import random
 from kinorrt.mechanics.stability_margin import *
 from kinorrt.rrt import RRTManipulation
+from kinorrt.mechanics.traj_optim import *
 
 OBJECT_SHAPE = [1.75, 1, 1.5, 0.75]
 HALLWAY_W = 2.5
@@ -43,12 +45,13 @@ def config2trans(q):
 
 
 class iTM2d(Application):
-    def __init__(self, object_shape):
+    def __init__(self, object_shape, example='sofa'):
         # Initialize scene.
         super(iTM2d, self).__init__(None)
 
         self.mesh = Box(1.0, 0.5, 0.2)
         self.light_box = Box(0.2, 0.2, 0.2)
+        self.example = example
         self.object_shape = object_shape
 
     def init(self):
@@ -95,21 +98,41 @@ class iTM2d(Application):
         self.manifold = None
         self.v_m = None
         self.counter = 0
-        self.targets = in_hand_targets(self.object_shape)
-
-        self.collision_manager = in_hand()
-
+        self.target = _itbl.Rectangle(self.object_shape[0] * 2, self.object_shape[1] * 2, 2, 0.0)
+        if self.example == 'sofa':
+            self.collision_manager = create_hallway(HALLWAY_W, BLOCK_W, BLOCK_H, self.object_shape[
+                0] * 2.5 + BLOCK_W * 0.5)  # uniform_sample_maze((4,4), 3, 1.25)
+        elif self.example == 'maze':
+            self.collision_manager = uniform_sample_maze((3, 3), 3, 1.25)
+        elif self.example == 'corner':
+            self.collision_manager = corner()
+        elif self.example == 'wall':
+            self.collision_manager = wall()
+        elif self.example == 'table':
+            self.collision_manager = table()
+        elif self.example == 'obstacle_course':
+            self.collision_manager = obstacle_course()
+        elif self.example == 'peg-in-hole-v':
+            self.collision_manager = peg_in_hole_v()
+        elif self.example == 'peg-in-hole-p':
+            self.collision_manager = peg_in_hole_p()
+        elif self.example == 'book':
+            self.collision_manager = book()
+        elif self.example == 'unpacking':
+            self.collision_manager = unpacking()
+        elif self.example == 'pushing':
+            self.collision_manager = pushing()
+        else:
+            print('Cannot find collision manager!')
+            raise
 
         self.all_configs_on = False
         self.step_on = False
         self.path_on = False
+        self.visualize = False
 
         self.manip_p = None
         self.next_manip_p = None
-
-    def target_T(self,T0,T1):
-        self.T0 = T0
-        self.T1 = T1
 
     def draw_manifold(self):
         if self.manifold is None:
@@ -212,8 +235,7 @@ class iTM2d(Application):
 
             # Draw object.
             self.basic_lighting_shader.set_vec3('objectColor', get_color('clay'))
-            for target in self.targets:
-                target.draw3d(self.basic_lighting_shader.id)
+            self.target.draw3d(self.basic_lighting_shader.id)
 
         # Draw normals.
         self.normal_shader.use()
@@ -234,8 +256,7 @@ class iTM2d(Application):
         glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
         if self.draw_wireframe:
             # Draw object.
-            for target in self.targets:
-                target.draw3d(self.lamp_shader.id)
+            self.target.draw3d(self.lamp_shader.id)
 
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
         light_model = glm.mat4(1.0)
@@ -303,28 +324,65 @@ class iTM2d(Application):
             T3 = np.identity(4)
             T3[0:2, 3] = T2[0:2, 2]
             T3[0:2, 0:2] = T2[0:2, 0:2]
-            self.targets[0].transform()[:, :] = np.dot(T3, self.T0)
-            self.targets[0].draw2d(self.flat_shader.id, True)
-            self.targets[1].transform()[:, :] = np.dot(T3, self.T1)
-            self.targets[1].draw2d(self.flat_shader.id, True)
+            self.target.transform()[:, :] = T3
+            self.target.draw2d(self.flat_shader.id, True)
 
             # print(self.counter, len(self.path))
             time.sleep(0.07)
             self.counter += 1
 
-        if self.path_on:
+        if self.visualize:
+            # Draw object.
             glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
-            for i in range(len(self.path)):
+            for i in range(len(self.key_path)):
+                new_m = point_manipulator()
+
+                self.config = self.key_path[i]
+                self.manip_p = self.key_mnp_path[i]
+                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
+                if self.manip_p is not None:
+                    for mnp in self.manip_p:
+                        p = mnp.p
+                        p = p[0:2]
+                        new_m.update_config(np.array(p), self.config)
+                        self.flat_shader.set_vec3('objectColor', get_color('red'))
+                        new_m.obj.draw2d(self.flat_shader.id, True)
+                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
+                self.flat_shader.set_vec3('objectColor', get_color('clay'))
+                T2 = config2trans(np.array(self.config))
+                T3 = np.identity(4)
+                T3[0:2, 3] = T2[0:2, 2]
+                T3[0:2, 0:2] = T2[0:2, 0:2]
+                self.target.transform()[:, :] = T3
+                self.target.draw2d(self.flat_shader.id, True)
+            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
+            i=1
+            while i < len(self.path):
+
                 self.flat_shader.set_vec3('objectColor', get_color('clay'))
                 target_config = self.path[i]
                 T2 = config2trans(np.array(target_config))
                 T3 = np.identity(4)
                 T3[0:2, 3] = T2[0:2, 2]
                 T3[0:2, 0:2] = T2[0:2, 0:2]
-                self.targets[0].transform()[:, :] = np.dot(T3, self.T0)
-                self.targets[0].draw2d(self.flat_shader.id, True)
-                self.targets[1].transform()[:, :] = np.dot(T3, self.T1)
-                self.targets[1].draw2d(self.flat_shader.id, True)
+                self.target.transform()[:, :] = T3
+                self.target.draw2d(self.flat_shader.id, True)
+                i+=2
+
+
+        if self.path_on:
+            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
+            for i in range(len(self.path)):
+                if i % 5 != 0 and i != len(self.path) - 1:
+                    continue
+                self.flat_shader.set_vec3('objectColor', get_color('clay'))
+                target_config = self.path[i]
+                T2 = config2trans(np.array(target_config))
+                T3 = np.identity(4)
+                T3[0:2, 3] = T2[0:2, 2]
+                T3[0:2, 0:2] = T2[0:2, 0:2]
+                self.target.transform()[:, :] = T3
+                self.target.draw2d(self.flat_shader.id, True)
 
         if self.all_configs_on:
             glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
@@ -336,16 +394,15 @@ class iTM2d(Application):
                 T3 = np.identity(4)
                 T3[0:2, 3] = T2[0:2, 2]
                 T3[0:2, 0:2] = T2[0:2, 0:2]
-                self.targets[0].transform()[:, :] = np.dot(T3, self.T0)
-                self.targets[0].draw2d(self.flat_shader.id, True)
-                self.targets[1].transform()[:, :] = np.dot(T3, self.T1)
-                self.targets[1].draw2d(self.flat_shader.id, True)
+                self.target.transform()[:, :] = T3
+                self.target.draw2d(self.flat_shader.id, True)
 
     def on_key_press2(self, key, scancode, action, mods):
         if key == glfw.KEY_C and action == glfw.PRESS:
             self.step_on = False
             self.path_on = False
             self.all_configs_on = False
+            self.visualize = False
         if key == glfw.KEY_T and action == glfw.PRESS:
             self.step_on = True
 
@@ -353,6 +410,8 @@ class iTM2d(Application):
             self.all_configs_on = True
         if key == glfw.KEY_P and action == glfw.PRESS:
             self.path_on = True
+        if key == glfw.KEY_V and action == glfw.PRESS:
+            self.visualize = True
 
     def on_key_press(self, key, scancode, action, mods):
         pass
@@ -379,219 +438,193 @@ class iTM2d(Application):
         if buttons == 4:  # right click
             self.camera.mouse_zoom(x, y)
 
-    def get_path(self, path, mnp_path):
-        self.path = path
-        self.mnp_path = mnp_path
+    def get_path(self, paths):
+        self.path, self.mnp_path, self.key_path, self.key_mnp_path = paths
 
     def get_nodes(self, nodes):
         self.nodes = nodes
     def get_tree(self, tree):
         self.tree = tree
 
-def in_hand():
-    manager = _itbl.CollisionManager2D()
+stability_solver = None
+seed_number = 1*1000
+random.seed(seed_number)
+np.random.seed(seed_number)
+keyword = 'book'
+max_samples=200
 
-    wall1 = _itbl.Rectangle(3, 0.5, 2, 0.05)
-    wall2 = _itbl.Rectangle(0.2,0.8,2,0.05)
+viewer = Viewer()
+_itbl.loadOpenGL()
+manipulator = point_manipulator()
+mnp_fn_max = None
+step_length = 2
+neighbor_r = 5
+dist_cost = 1
 
-    wall1.transform()[0:3, 3] = np.array([0, 1.75, 0]).reshape(wall1.transform()[0:3, 3].shape)
-    wall2.transform()[0:3, 3] = np.array([0, 1.35, 0]).reshape(wall1.transform()[0:3, 3].shape)
-
-    manager.add(wall1)
-    # manager.add(wall2)
-
-
-    return manager
-
-
-def in_hand_targets(object_shapes):
-    targets = []
-
-    wall1 = _itbl.Rectangle(object_shapes[0][0], object_shapes[0][1], 2, 0.05)
-    wall2= _itbl.Rectangle(object_shapes[1][0], object_shapes[1][1], 2, 0.05)
-
-
-    wall1.transform()[0:3, 3] = np.array([0, object_shapes[0][1]/2 , 0]).reshape(wall1.transform()[0:3, 3].shape)
-    wall2.transform()[0:3, 3] = np.array([0, -object_shapes[1][1]/2 , 0]).reshape(wall2.transform()[0:3, 3].shape)
-
-    targets.append(wall1)
-    targets.append(wall2)
-
-    return targets
-
-class in_hand_part(object):
-    def __init__(self, objs, object_shapes):
-        self.objs = objs
-        self.object_shapes = object_shapes
-        self.T0 = np.copy(self.objs[0].transform())
-        self.T1 = np.copy(self.objs[1].transform())
-
-    def update_config(self, x):
-        T2 = config2trans(np.array(x))
-        T3 = np.identity(4)
-        T3[0:2, 3] = T2[0:2, 2]
-        T3[0:2, 0:2] = T2[0:2, 0:2]
-        self.objs[0].transform()[:, :] = np.dot(T3,self.T0)
-        self.objs[1].transform()[:, :] = np.dot(T3, self.T1)
-        return
-
-    def contacts2objframe(self, w_contacts, x):
-        contacts = []
-        g_inv = inv_g_2d(config2trans(np.array(x)))
-        # the contacts are wrt the object frame
-        for c in w_contacts:
-            cp = np.array(c.p)
-            cn = np.array(c.n)
-            cp_o = np.dot(g_inv,np.concatenate([cp,[1]]))
-            cn_o = np.dot(g_inv[0:2,0:2], cn)
-            ci = Contact(cp_o[0:2], cn_o, c.d)
-            contacts.append(ci)
-        return contacts
-
-    def sample_contacts(self, npts):
-        return sample_finger_contact_inhand(self.object_shapes, npts)
-
-def sample_finger_contact_inhand(object_shapes, npts):
-    w1 = object_shapes[0][0]
-    l1 = object_shapes[0][1]
-    w2 = object_shapes[1][0]
-    l2 = object_shapes[1][1]
-    contacts = []
-
-    finger_sides = np.random.choice([0,1,2,3,4,5,6,7], npts)
-    for side in finger_sides:
-        if side == 0:
-            n = np.array([0, -1])
-            p = np.array([w1 * (np.random.random() - 0.5), l1])
-        elif side == 1:
-            n = np.array([-1, 0])
-            p = np.array([w1/2,l1*np.random.random()])
-        elif side == 2:
-            n = np.array([0, 1])
-            p = np.array([w2/2 + 0.5*(w1-w2)*np.random.random(), 0])
-        elif side == 3:
-            n = np.array([-1, 0])
-            p = np.array([w2/2, -l2*np.random.random()])
-        elif side == 4:
-            n = np.array([0, 1])
-            p = np.array([w2*(np.random.random() - 0.5), -l2])
-        elif side == 5:
-            n = np.array([1, 0])
-            p = np.array([-w2/2, -l2*np.random.random()])
-        elif side == 6:
-            n = np.array([0, 1])
-            p = np.array([-(w2/2 + 0.5*(w1-w2)*np.random.random()), 0])
-        elif side == 7:
-            n = np.array([1, 0])
-            p = np.array([-w1/2,l1*np.random.random()])
-
-        contact = Contact(p, n, 0.0)
-        contacts.append(contact)
-    return contacts
-
-class in_hand_environment(object):
-    def __init__(self, collision_manager):
-        self.collision_manager = collision_manager
-
-    def check_collision(self, target, target_config):
-        # contacts are in the world frame
-        target.update_config(target_config)
-        manifold = self.collision_manager.collide(target.objs[0])
-        if_collide = sum(np.array(manifold.depths) < 0.015) != 0
-
-        n_pts = len(manifold.contact_points)
-        contacts = []
-
-        # the contacts are wrt the object frame
-        for i in range(n_pts):
-            if manifold.depths[i] >= 0.015:
-                continue
-            cp = manifold.contact_points[i]
-            cn = manifold.normals[i]
-            ci = Contact(cp, cn, manifold.depths[i])
-            contacts.append(ci)
-
-        manifold = self.collision_manager.collide(target.objs[1])
-        if sum(np.array(manifold.depths) < 0.015) != 0:
-            if_collide = True
-
-        n_pts = len(manifold.contact_points)
-        # the contacts are wrt the object frame
-        for i in range(n_pts):
-            if manifold.depths[i] >= 0.015:
-                continue
-            cp = manifold.contact_points[i]
-            cn = manifold.normals[i]
-            ci = Contact(cp, cn, manifold.depths[i])
-            contacts.append(ci)
-
-        return if_collide, contacts
-
-def test_kinorrt_cases(stability_solver, max_samples = 100):
-
-    viewer = Viewer()
-    _itbl.loadOpenGL()
-
-    step_length = 2
+if keyword == 'corner':
     neighbor_r = 5
-    dist_cost = 10
-
-    object_shapes = [[1,0.5],[0.5,0.5]]
-    X_dimensions = np.array([(-1.5, 1.5), (-1.5, 2), (-1.5*np.pi, 1.5*np.pi)])
-    x_init = (0,0,0)
-    x_goal = (0,0,np.pi)
+    object_shape = [0.5, 0.5, 0.2, 0.2]
+    X_dimensions = np.array([(0, 4), (0, 4), (-np.pi, np.pi)])
+    x_init = (3, 0.5, 0)  # starting location
+    x_goal = (0.707, 0.707, -np.pi / 4)
     world_key = 'vert'
     dist_weight = 1
-    manipulator = doublepoint_manipulator(np.array([[-1.5,-1.5,0.,-1.5],[-0.,1.5,1.5,1.5]]))
+    manipulator = doublepoint_manipulator()
+    mnp_fn_max = 10
+    step_length = 2
+    goal_kch = [1, 1, 1]
+elif keyword == 'wall':
+    neighbor_r = 10
+    object_shape = [0.5,0.5,0.2,0.2]
+    X_dimensions = np.array([(-8, 8), (0, 7 + object_shape[1]*4), (-np.pi, np.pi)])
+    x_init = (4.5, 0.5, 0)
+    x_goal = (-3, 7.5, 0)
+    world_key = 'vert'
+    dist_weight = 1
+    dist_cost = 0.2
+    manipulator = point_manipulator()
+    step_length = 10
+    mnp_fn_max = 50
+    goal_kch = [1,1,0]
+
+elif keyword == 'obstacle_course':
+    object_shape = [0.5, 0.5, 0.2, 0.2]
+    X_dimensions = np.array([(-2.5,3), (0, 4), (-2*np.pi, 2*np.pi)])
+    x_init = (-2.5, 1.5, 0)
+    x_goal = (2.5, 1.5, 0)
+    world_key = 'vert'
+    dist_weight = 0.08
+    dist_cost = 1
+    manipulator = doublepoint_manipulator()
+    mnp_fn_max = 6.15
+    goal_kch = [0.7,0.2,0]
+elif keyword == 'peg-in-hole-v':
+    object_shape = [0.45, 1, 0.2, 0.2]
+    X_dimensions = np.array([(-2, 1), (-2, 3), (-np.pi, np.pi)])
+    x_init = (-2,1,0)
+    x_goal = (0,-1,0)
+    world_key = 'vert'
+    dist_weight = 1
+    manipulator = doublepoint_manipulator()
+    mnp_fn_max = 50
+    goal_kch = [0.5, 0.2, 0.8]
+    init_mnp = [Contact((-0.45, 0.8), (1, 0), 0), Contact((0.45, 0.8), (-1, 0), 0)]
+
+elif keyword == 'peg-in-hole-p':
+    object_shape = [0.45, 1, 0.2, 0.2]
+    X_dimensions = np.array([(-2, 3), (0,2.5), (-np.pi, np.pi)])
+    x_init = (3,2.5,0)
+    x_goal = (-1,0.5,np.pi/2)
+    world_key = 'planar'
+    dist_weight = 1
+    manipulator = doublepoint_manipulator()
+    mnp_fn_max = 50
+    goal_kch = [1, 1, 1]
+
+elif keyword == 'unpacking':
+    object_shape = [0.39, 1, 0.2, 0.2]
+    X_dimensions = np.array([(-2, 2), (-0.5, 2.5), (-np.pi, np.pi)])
+    x_init = (-0.5,0,0)
+    x_goal = (1,1.39,-np.pi/2)
+    world_key = 'vert'
+    dist_weight = 1
+    manipulator = doublepoint_manipulator()
     mnp_fn_max = 100
-    goal_kch = [0.1, 0.1, 1]
+    goal_kch = [1, 1, 1]
 
-    app = iTM2d(object_shapes)
-    viewer.set_renderer(app)
-    viewer.init()
+elif keyword == 'book':
+    object_shape = [1, 0.2, 0.2, 0.2]
+    X_dimensions = np.array([(-4.5, 4.5), (2, 3.5), (-2*np.pi, 2*np.pi)])
+    x_init = (0,2.2,0)
+    x_goal = (-2,3,-np.pi/2)
+    world_key = 'vert'
+    dist_weight = 1
+    manipulator = doublepoint_manipulator()
+    mnp_fn_max = 15
+    goal_kch = [0.01, 0.1, 1]
+    allow_contact_edges = [True, False, True, False]
 
-    X = SearchSpace(X_dimensions)
+elif keyword == 'pushing':
+    object_shape = [0.5, 1, 0.2, 0.2]
+    X_dimensions = np.array([(-3.1, 3.1), (-2.6,4), (-np.pi, np.pi)])
+    x_init = (-2,-1.25,0)
+    x_goal = (2.1,2.75,0)
+    world_key = 'planar'
+    dist_weight = 1
+    manipulator = point_manipulator()
+    mnp_fn_max = 50
+    goal_kch = [1, 1, 1]
 
-    the_object = in_hand_part(app.targets,object_shapes)
+app = iTM2d(object_shape, example=keyword)
+viewer.set_renderer(app)
+viewer.init()
 
-    app.target_T(the_object.T0, the_object.T1)
-    envir = in_hand_environment(app.collision_manager)
-    rrt_tree = RRTManipulation(X, x_init, x_goal, envir, the_object, manipulator,
-                                max_samples, neighbor_r, world_key)
-    rrt_tree.env_mu = 0.8
-    rrt_tree.mnp_mu = 0.8
-    rrt_tree.mnp_fn_max = mnp_fn_max
-    rrt_tree.dist_weight = dist_weight
-    rrt_tree.cost_weight[0] = dist_cost
-    rrt_tree.step_length = step_length
-    rrt_tree.goal_kch = goal_kch
+X = SearchSpace(X_dimensions)
 
-    rrt_tree.initialize_stability_margin_solver(stability_solver)
+if keyword == 'book':
+    the_object = part(app.target, object_shape, allow_contact_edges)
+else:
+    the_object = part(app.target, object_shape)
 
-    t_start = time.time()
+rrt_tree = RRTManipulation(X, x_init, x_goal, environment(app.collision_manager), the_object, manipulator,
+                            max_samples, neighbor_r, world_key)
+rrt_tree.mnp_fn_max = mnp_fn_max
+rrt_tree.dist_weight = dist_weight
+rrt_tree.cost_weight[0] = dist_cost
+rrt_tree.step_length = step_length
+rrt_tree.goal_kch = goal_kch
 
-    init_mnp = [Contact((-0.5,0.25),(1,0),0),Contact((0.5,0.25),(-1,0),0)]
-    # rrt_tree.x_goal = (0,0,np.pi/2)
-    # path, mnp_path = rrt_tree.search(init_mnp)
-    rrt_tree.x_goal = (0, 0, np.pi)
-    path, mnp_path = rrt_tree.search(init_mnp)
+rrt_tree.initialize_stability_margin_solver(stability_solver)
 
-    t_end = time.time()
-    print('time:', t_end - t_start)
+t_start = time.time()
+if keyword == 'peg-in-hole-v':
+    paths = rrt_tree.search(init_mnp)
+else:
+    paths = rrt_tree.search()
+t_end = time.time()
+print('time:', t_end - t_start)
 
-    app.get_path(path, mnp_path)
-    app.get_nodes(rrt_tree.trees[0].nodes)
-    app.get_tree(rrt_tree)
-    viewer.start()
+key_path = paths[2]
 
-    return
-times = []
-stability_solver = StabilityMarginSolver()
-for i in range(0,10):
-    seed_number = i*1000
-    random.seed(seed_number)
-    np.random.seed(seed_number)
-    ti = test_kinorrt_cases(stability_solver, max_samples=1000)
-    print(i)
-    times.append(ti)
-print(times)
+whole_path = []
+envs = []
+mnps = []
+modes = []
+for q in key_path[1:]:
+    ps = rrt_tree.trees[0].edges[q].path
+    ps.reverse()
+    m = np.array(rrt_tree.trees[0].edges[q].mode)
+    current_envs = []
+    current_modes = []
+    current_path = []
+    mnp = rrt_tree.trees[0].edges[q].manip
+    for p in ps:
+        _, env = rrt_tree.check_collision(p)
+        if len(mnp) + len(env) != len(m):
+            if len(mnp)+len(env) == sum(m != CONTACT_MODE.LIFT_OFF):
+                m=m[m!=CONTACT_MODE.LIFT_OFF]
+            else:
+                print('env contact error')
+                continue
+        current_modes.append(m)
+        current_path.append(p)
+        current_envs.append(env)
+
+    current_mnps = [mnp]*len(current_path)
+    whole_path += current_path
+    envs += current_envs
+    modes += current_modes
+    mnps += current_mnps
+
+print(whole_path, envs, modes, mnps)
+# app.get_path(paths)
+results = traj_optim_static((whole_path, envs, modes, mnps), rrt_tree)
+
+app.get_path((np.array(results).reshape(-1,3), mnps, paths[2],paths[3]))
+app.get_nodes(rrt_tree.trees[0].nodes)
+app.get_tree(rrt_tree)
+viewer.start()
+
+
+
+

@@ -18,6 +18,7 @@ from kinorrt.mechanics.contact_kinematics import *
 import random
 from kinorrt.mechanics.stability_margin import *
 from kinorrt.rrt import RRTManipulation
+from kinorrt.mechanics.traj_optim import *
 
 OBJECT_SHAPE = [1.75, 1, 1.5, 0.75]
 HALLWAY_W = 2.5
@@ -574,24 +575,56 @@ def test_kinorrt_cases(stability_solver, max_samples = 100):
     # rrt_tree.x_goal = (0,0,np.pi/2)
     # path, mnp_path = rrt_tree.search(init_mnp)
     rrt_tree.x_goal = (0, 0, np.pi)
-    path, mnp_path = rrt_tree.search(init_mnp)
+    paths = rrt_tree.search(init_mnp)
 
     t_end = time.time()
     print('time:', t_end - t_start)
 
-    app.get_path(path, mnp_path)
+    whole_path = []
+    envs = []
+    mnps = []
+    modes = []
+    for q in paths[2][2:]:
+        ps = rrt_tree.trees[0].edges[q].path
+        ps.reverse()
+        m = np.array(rrt_tree.trees[0].edges[q].mode)
+        current_envs = []
+        current_modes = []
+        current_path = []
+        mnp = rrt_tree.trees[0].edges[q].manip
+        for p in ps:
+            _, env = rrt_tree.check_collision(p)
+            if len(mnp) + len(env) != len(m):
+                if len(mnp) + len(env) == sum(m != CONTACT_MODE.LIFT_OFF):
+                    m = m[m != CONTACT_MODE.LIFT_OFF]
+                else:
+                    print('env contact error')
+                    continue
+            current_modes.append(m)
+            current_path.append(p)
+            current_envs.append(env)
+
+        current_mnps = [mnp] * len(current_path)
+        whole_path += current_path
+        envs += current_envs
+        modes += current_modes
+        mnps += current_mnps
+
+    print(whole_path, envs, modes, mnps)
+    # app.get_path(paths[0],mnps)
+    results = traj_optim_static((whole_path, envs, modes, mnps), rrt_tree)
+
+    app.get_path(np.array(results).reshape(-1, 3), mnps)
     app.get_nodes(rrt_tree.trees[0].nodes)
     app.get_tree(rrt_tree)
     viewer.start()
 
     return
-times = []
+
 stability_solver = StabilityMarginSolver()
-for i in range(0,10):
+for i in [4]:
     seed_number = i*1000
     random.seed(seed_number)
     np.random.seed(seed_number)
     ti = test_kinorrt_cases(stability_solver, max_samples=1000)
-    print(i)
-    times.append(ti)
-print(times)
+

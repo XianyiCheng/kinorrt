@@ -128,6 +128,16 @@ def corner():
 
     return manager
 
+def table():
+    manager = _itbl.CollisionManager2D()
+
+    wall1 = _itbl.Rectangle(5, 1, 2, 0.05)
+    wall1.transform()[0:3, 3] = np.array([1.5, -0.5, 0]).reshape(wall1.transform()[0:3, 3].shape)
+
+    manager.add(wall1)
+
+    return manager
+
 
 def wall():
     manager = _itbl.CollisionManager2D()
@@ -230,3 +240,25 @@ def unpacking():
 
     return manager
 
+def pushing():
+    manager = _itbl.CollisionManager2D()
+    wall1 = _itbl.Rectangle(9, 1.5, 2, 0.05)
+    wall1.transform()[0:3, 3] = np.array([0, -3.25, 0]).reshape(wall1.transform()[0:3, 3].shape)
+    manager.add(wall1)
+    wall2 = _itbl.Rectangle(1.5, 6.5, 2, 0.05)
+    wall2.transform()[0:3, 3] = np.array([-3.75, 0.75, 0]).reshape(wall1.transform()[0:3, 3].shape)
+    manager.add(wall2)
+    wall3 = _itbl.Rectangle(4, 2.5, 2, 0.05)
+    wall3.transform()[0:3, 3] = np.array([1, -1.25, 0]).reshape(wall1.transform()[0:3, 3].shape)
+    manager.add(wall3)
+    wall4 = _itbl.Rectangle(1.5, 6.5, 2, 0.05)
+    wall4.transform()[0:3, 3] = np.array([3.75, 0.75, 0]).reshape(wall1.transform()[0:3, 3].shape)
+    manager.add(wall4)
+    wall5 = _itbl.Rectangle(2.4, 2.7, 2, 0.05)
+    wall5.transform()[0:3, 3] = np.array([0, 2.65, 0]).reshape(wall1.transform()[0:3, 3].shape)
+    manager.add(wall5)
+    wall6 = _itbl.Rectangle(9, 1.5, 2, 0.05)
+    wall6.transform()[0:3, 3] = np.array([0, 4.75, 0]).reshape(wall1.transform()[0:3, 3].shape)
+    manager.add(wall6)
+
+    return manager

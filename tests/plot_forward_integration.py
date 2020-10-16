@@ -1,4 +1,3 @@
-
 from time import time
 
 import glm
@@ -10,6 +9,7 @@ from itbl.shapes import Box
 from itbl.util import get_color, get_data
 from itbl.viewer import Application, Viewer
 from itbl.viewer.backend import *
+from wilson import *
 import itbl._itbl as _itbl
 import time
 
@@ -19,36 +19,16 @@ import random
 from kinorrt.mechanics.stability_margin import *
 from kinorrt.rrt import RRTManipulation
 
-OBJECT_SHAPE = [1.75, 1, 1.5, 0.75]
-HALLWAY_W = 2.5
-BLOCK_H = 7
-BLOCK_W = 5
-np.seterr(divide='ignore')
-np.set_printoptions(suppress=True, precision=4, linewidth=210)
-
-
-def print_opengl_error():
-    err = glGetError()
-    if (err != GL_NO_ERROR):
-        print('GLError: ', gluErrorString(err))
-
-def config2trans(q):
-    q = q.flatten()
-    a = q[2]
-    g = np.identity(3)
-    R = np.array([[np.cos(a),-np.sin(a)],[np.sin(a), np.cos(a)]])
-    g[0:2,0:2] = R
-    g[0:2,-1] = q[0:2]
-    return g
-
+import plotly.graph_objects as go
 
 class iTM2d(Application):
-    def __init__(self, object_shape):
+    def __init__(self, object_shape, example='sofa'):
         # Initialize scene.
         super(iTM2d, self).__init__(None)
 
         self.mesh = Box(1.0, 0.5, 0.2)
         self.light_box = Box(0.2, 0.2, 0.2)
+        self.example = example
         self.object_shape = object_shape
 
     def init(self):
@@ -95,10 +75,31 @@ class iTM2d(Application):
         self.manifold = None
         self.v_m = None
         self.counter = 0
-        self.targets = in_hand_targets(self.object_shape)
-
-        self.collision_manager = in_hand()
-
+        self.target = _itbl.Rectangle(self.object_shape[0] * 2, self.object_shape[1] * 2, 2, 0.0)
+        if self.example == 'sofa':
+            self.collision_manager = create_hallway(HALLWAY_W, BLOCK_W, BLOCK_H, self.object_shape[
+                0] * 2.5 + BLOCK_W * 0.5)  # uniform_sample_maze((4,4), 3, 1.25)
+        elif self.example == 'maze':
+            self.collision_manager = uniform_sample_maze((3, 3), 3, 1.25)
+        elif self.example == 'corner':
+            self.collision_manager = corner()
+        elif self.example == 'wall':
+            self.collision_manager = wall()
+        elif self.example == 'table':
+            self.collision_manager = corner()
+        elif self.example == 'obstacle_course':
+            self.collision_manager = obstacle_course()
+        elif self.example == 'peg-in-hole-v':
+            self.collision_manager = peg_in_hole_v()
+        elif self.example == 'peg-in-hole-p':
+            self.collision_manager = peg_in_hole_p()
+        elif self.example == 'book':
+            self.collision_manager = book()
+        elif self.example == 'unpacking':
+            self.collision_manager = unpacking()
+        else:
+            print('Cannot find collision manager!')
+            raise
 
         self.all_configs_on = False
         self.step_on = False
@@ -106,10 +107,6 @@ class iTM2d(Application):
 
         self.manip_p = None
         self.next_manip_p = None
-
-    def target_T(self,T0,T1):
-        self.T0 = T0
-        self.T1 = T1
 
     def draw_manifold(self):
         if self.manifold is None:
@@ -212,8 +209,7 @@ class iTM2d(Application):
 
             # Draw object.
             self.basic_lighting_shader.set_vec3('objectColor', get_color('clay'))
-            for target in self.targets:
-                target.draw3d(self.basic_lighting_shader.id)
+            self.target.draw3d(self.basic_lighting_shader.id)
 
         # Draw normals.
         self.normal_shader.use()
@@ -234,8 +230,7 @@ class iTM2d(Application):
         glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
         if self.draw_wireframe:
             # Draw object.
-            for target in self.targets:
-                target.draw3d(self.lamp_shader.id)
+            self.target.draw3d(self.lamp_shader.id)
 
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
         light_model = glm.mat4(1.0)
@@ -303,10 +298,8 @@ class iTM2d(Application):
             T3 = np.identity(4)
             T3[0:2, 3] = T2[0:2, 2]
             T3[0:2, 0:2] = T2[0:2, 0:2]
-            self.targets[0].transform()[:, :] = np.dot(T3, self.T0)
-            self.targets[0].draw2d(self.flat_shader.id, True)
-            self.targets[1].transform()[:, :] = np.dot(T3, self.T1)
-            self.targets[1].draw2d(self.flat_shader.id, True)
+            self.target.transform()[:, :] = T3
+            self.target.draw2d(self.flat_shader.id, True)
 
             # print(self.counter, len(self.path))
             time.sleep(0.07)
@@ -321,10 +314,8 @@ class iTM2d(Application):
                 T3 = np.identity(4)
                 T3[0:2, 3] = T2[0:2, 2]
                 T3[0:2, 0:2] = T2[0:2, 0:2]
-                self.targets[0].transform()[:, :] = np.dot(T3, self.T0)
-                self.targets[0].draw2d(self.flat_shader.id, True)
-                self.targets[1].transform()[:, :] = np.dot(T3, self.T1)
-                self.targets[1].draw2d(self.flat_shader.id, True)
+                self.target.transform()[:, :] = T3
+                self.target.draw2d(self.flat_shader.id, True)
 
         if self.all_configs_on:
             glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
@@ -336,10 +327,8 @@ class iTM2d(Application):
                 T3 = np.identity(4)
                 T3[0:2, 3] = T2[0:2, 2]
                 T3[0:2, 0:2] = T2[0:2, 0:2]
-                self.targets[0].transform()[:, :] = np.dot(T3, self.T0)
-                self.targets[0].draw2d(self.flat_shader.id, True)
-                self.targets[1].transform()[:, :] = np.dot(T3, self.T1)
-                self.targets[1].draw2d(self.flat_shader.id, True)
+                self.target.transform()[:, :] = T3
+                self.target.draw2d(self.flat_shader.id, True)
 
     def on_key_press2(self, key, scancode, action, mods):
         if key == glfw.KEY_C and action == glfw.PRESS:
@@ -388,210 +377,105 @@ class iTM2d(Application):
     def get_tree(self, tree):
         self.tree = tree
 
-def in_hand():
-    manager = _itbl.CollisionManager2D()
 
-    wall1 = _itbl.Rectangle(3, 0.5, 2, 0.05)
-    wall2 = _itbl.Rectangle(0.2,0.8,2,0.05)
+object_shape = [1, 0.2, 0.2, 0.2]
+X_dimensions = np.array([(-4.5, 4.5), (2, 3.5), (-2 * np.pi, 2 * np.pi)])
+x_init = (0, 2.2, 0)
+x_goal = (0, 3, -np.pi / 2)
+world_key = 'vert'
+dist_weight = 1
 
-    wall1.transform()[0:3, 3] = np.array([0, 1.75, 0]).reshape(wall1.transform()[0:3, 3].shape)
-    wall2.transform()[0:3, 3] = np.array([0, 1.35, 0]).reshape(wall1.transform()[0:3, 3].shape)
+mnp_fn_max = 6
+goal_kch = [0.01, 0.1, 1]
+allow_contact_edges = [True, False, True, False]
 
-    manager.add(wall1)
-    # manager.add(wall2)
+viewer = Viewer()
+_itbl.loadOpenGL()
+manipulator = doublepoint_manipulator()
+mnp_fn_max = None
+step_length = 2
+neighbor_r = 5
+dist_cost = 1
+
+app = iTM2d(object_shape, example='book')
+viewer.set_renderer(app)
+viewer.init()
+
+X = SearchSpace(X_dimensions)
+
+the_object = part(app.target, object_shape, allow_contact_edges)
+
+rrt_tree = RRTManipulation(X, x_init, x_goal, environment(app.collision_manager), the_object, manipulator,
+                           50, neighbor_r, world_key)
+
+x = (-2.3, 2.2, 0)
+x_rand = (-2.5, 2.2, -np.pi)
+x_rand1 = (-3,3.5,-np.pi/3)
+_, envs = rrt_tree.check_collision(x)
+mnps = [Contact((-0.8,0.2),(0,-1),0),Contact((-0.8,-0.2),(0,1),0)]
+mode = [CONTACT_MODE.FOLLOWING,CONTACT_MODE.FOLLOWING,CONTACT_MODE.SLIDING_LEFT,CONTACT_MODE.LIFT_OFF]
+x_new, path, _ = rrt_tree.forward_integration(x,x_rand,envs,mnps,mode)
+path += [(-2.432,3,-np.pi/2)]
+x_new, path1, _ = rrt_tree.forward_integration(x,x_rand1,envs,mnps,mode)
+path += [(-2.432,3,-np.pi/2)]
+print(x_new)
+print(path)
+
+fig = go.Figure()
+boundary = []
+for theta in np.arange(0,np.pi/2,0.1):
+    q = (-3-1*np.cos(theta)+0.2*np.sin(theta), 2+0.2*np.cos(theta)+1*np.sin(theta),-theta)
+    boundary += [q]
+boundary += [(-2.8,3,-np.pi/2)]
+
+for x0 in np.arange(-2.8,-1.1,0.1):
+    boundary += [(x0,3,-np.pi/2)]
+boundary += [(-1.1,3,-np.pi/2)]
+
+b0 = []
+for theta in np.arange(0,np.pi/2,0.1):
+    q = (-1.3-1*np.cos(theta)+0.2*np.sin(theta), 2+0.2*np.cos(theta)+1*np.sin(theta),-theta)
+    b0 += [q]
+
+b0.reverse()
+boundary+=b0
+
+for x0 in np.arange(-4,-2.3,0.1):
+    boundary += [(x0,2.2,0)]
 
 
-    return manager
+
+'''
+x1, path1, _ = rrt_tree.forward_integration(x,(-4,2.2,0),envs,mnps,mode)
+x2, path2, _ = rrt_tree.forward_integration(x,(-4,2.2,-np.pi/4),envs,mnps,mode)
+x3, path3, _ = rrt_tree.forward_integration(x,(-3,2.6,-np.pi/3),envs,mnps,mode)
+x4, path4, _ = rrt_tree.forward_integration(x,(-4,3,-np.pi),envs,mnps,mode)
+x5, path5, _ = rrt_tree.forward_integration(x,(-0.5,3,-np.pi),envs,mnps,mode)
+x6, path6, _ = rrt_tree.forward_integration(x,(-4,3,-np.pi/2.5),envs,mnps,mode)
+x7, path7, _ = rrt_tree.forward_integration(x,(-2,3,-np.pi),envs,mnps,mode)
+'''
+xb, yb, zb = np.array(boundary).T
+#xs, ys, zs = np.array(boundary + path+path1+path2+path3+path4+path5+path6+path7).T
 
 
-def in_hand_targets(object_shapes):
-    targets = []
+x,y,z = np.array(path).T
+x1,y1,z1 = np.array(path1).T
+fig = go.Figure()
 
-    wall1 = _itbl.Rectangle(object_shapes[0][0], object_shapes[0][1], 2, 0.05)
-    wall2= _itbl.Rectangle(object_shapes[1][0], object_shapes[1][1], 2, 0.05)
+fig.add_trace(go.Scatter3d(x=xb, y=zb, z=yb, mode='lines', line={'width':8, 'color':'blue'},name='Manifold Boundary'))
+# fig.add_trace(go.Scatter3d(x=xs, y=ys, z=zs, mode='markers', opacity=0.50))
+fig.add_trace(go.Scatter3d(x=x, y=z, z=y, name='trajectory 1', mode='lines+markers',line={'width':4,'color':'green'},marker={'size':4,'color':'green'}))
+fig.add_trace(go.Scatter3d(x=x1, y=z1, z=y1,name='trajectory 2', mode='lines+markers',line={'width':4,'color':'red'}, marker={'size':4,'color':'red'}))
+fig.add_trace(go.Scatter3d(x=[x_rand[0]], y=[x_rand[2]], z=[x_rand[1]], mode='markers',name = 'goal 1', marker={'size':6,'color':'green'}))
+fig.add_trace(go.Scatter3d(x=[x_rand1[0]], y=[x_rand1[2]], z=[x_rand1[1]],mode='markers',name = 'goal 2', marker={'size':6,'color':'red'}))
+fig.update_layout(
+    scene={
+        'xaxis_title':'x',
+        'yaxis_title' : 'θ',
+        'zaxis_title' : 'y',
+        'aspectmode': 'cube'
+    })
+#fig.write_html("./forward_integration.html")
+fig.show()
 
 
-    wall1.transform()[0:3, 3] = np.array([0, object_shapes[0][1]/2 , 0]).reshape(wall1.transform()[0:3, 3].shape)
-    wall2.transform()[0:3, 3] = np.array([0, -object_shapes[1][1]/2 , 0]).reshape(wall2.transform()[0:3, 3].shape)
-
-    targets.append(wall1)
-    targets.append(wall2)
-
-    return targets
-
-class in_hand_part(object):
-    def __init__(self, objs, object_shapes):
-        self.objs = objs
-        self.object_shapes = object_shapes
-        self.T0 = np.copy(self.objs[0].transform())
-        self.T1 = np.copy(self.objs[1].transform())
-
-    def update_config(self, x):
-        T2 = config2trans(np.array(x))
-        T3 = np.identity(4)
-        T3[0:2, 3] = T2[0:2, 2]
-        T3[0:2, 0:2] = T2[0:2, 0:2]
-        self.objs[0].transform()[:, :] = np.dot(T3,self.T0)
-        self.objs[1].transform()[:, :] = np.dot(T3, self.T1)
-        return
-
-    def contacts2objframe(self, w_contacts, x):
-        contacts = []
-        g_inv = inv_g_2d(config2trans(np.array(x)))
-        # the contacts are wrt the object frame
-        for c in w_contacts:
-            cp = np.array(c.p)
-            cn = np.array(c.n)
-            cp_o = np.dot(g_inv,np.concatenate([cp,[1]]))
-            cn_o = np.dot(g_inv[0:2,0:2], cn)
-            ci = Contact(cp_o[0:2], cn_o, c.d)
-            contacts.append(ci)
-        return contacts
-
-    def sample_contacts(self, npts):
-        return sample_finger_contact_inhand(self.object_shapes, npts)
-
-def sample_finger_contact_inhand(object_shapes, npts):
-    w1 = object_shapes[0][0]
-    l1 = object_shapes[0][1]
-    w2 = object_shapes[1][0]
-    l2 = object_shapes[1][1]
-    contacts = []
-
-    finger_sides = np.random.choice([0,1,2,3,4,5,6,7], npts)
-    for side in finger_sides:
-        if side == 0:
-            n = np.array([0, -1])
-            p = np.array([w1 * (np.random.random() - 0.5), l1])
-        elif side == 1:
-            n = np.array([-1, 0])
-            p = np.array([w1/2,l1*np.random.random()])
-        elif side == 2:
-            n = np.array([0, 1])
-            p = np.array([w2/2 + 0.5*(w1-w2)*np.random.random(), 0])
-        elif side == 3:
-            n = np.array([-1, 0])
-            p = np.array([w2/2, -l2*np.random.random()])
-        elif side == 4:
-            n = np.array([0, 1])
-            p = np.array([w2*(np.random.random() - 0.5), -l2])
-        elif side == 5:
-            n = np.array([1, 0])
-            p = np.array([-w2/2, -l2*np.random.random()])
-        elif side == 6:
-            n = np.array([0, 1])
-            p = np.array([-(w2/2 + 0.5*(w1-w2)*np.random.random()), 0])
-        elif side == 7:
-            n = np.array([1, 0])
-            p = np.array([-w1/2,l1*np.random.random()])
-
-        contact = Contact(p, n, 0.0)
-        contacts.append(contact)
-    return contacts
-
-class in_hand_environment(object):
-    def __init__(self, collision_manager):
-        self.collision_manager = collision_manager
-
-    def check_collision(self, target, target_config):
-        # contacts are in the world frame
-        target.update_config(target_config)
-        manifold = self.collision_manager.collide(target.objs[0])
-        if_collide = sum(np.array(manifold.depths) < 0.015) != 0
-
-        n_pts = len(manifold.contact_points)
-        contacts = []
-
-        # the contacts are wrt the object frame
-        for i in range(n_pts):
-            if manifold.depths[i] >= 0.015:
-                continue
-            cp = manifold.contact_points[i]
-            cn = manifold.normals[i]
-            ci = Contact(cp, cn, manifold.depths[i])
-            contacts.append(ci)
-
-        manifold = self.collision_manager.collide(target.objs[1])
-        if sum(np.array(manifold.depths) < 0.015) != 0:
-            if_collide = True
-
-        n_pts = len(manifold.contact_points)
-        # the contacts are wrt the object frame
-        for i in range(n_pts):
-            if manifold.depths[i] >= 0.015:
-                continue
-            cp = manifold.contact_points[i]
-            cn = manifold.normals[i]
-            ci = Contact(cp, cn, manifold.depths[i])
-            contacts.append(ci)
-
-        return if_collide, contacts
-
-def test_kinorrt_cases(stability_solver, max_samples = 100):
-
-    viewer = Viewer()
-    _itbl.loadOpenGL()
-
-    step_length = 2
-    neighbor_r = 5
-    dist_cost = 10
-
-    object_shapes = [[1,0.5],[0.5,0.5]]
-    X_dimensions = np.array([(-1.5, 1.5), (-1.5, 2), (-1.5*np.pi, 1.5*np.pi)])
-    x_init = (0,0,0)
-    x_goal = (0,0,np.pi)
-    world_key = 'vert'
-    dist_weight = 1
-    manipulator = doublepoint_manipulator(np.array([[-1.5,-1.5,0.,-1.5],[-0.,1.5,1.5,1.5]]))
-    mnp_fn_max = 100
-    goal_kch = [0.1, 0.1, 1]
-
-    app = iTM2d(object_shapes)
-    viewer.set_renderer(app)
-    viewer.init()
-
-    X = SearchSpace(X_dimensions)
-
-    the_object = in_hand_part(app.targets,object_shapes)
-
-    app.target_T(the_object.T0, the_object.T1)
-    envir = in_hand_environment(app.collision_manager)
-    rrt_tree = RRTManipulation(X, x_init, x_goal, envir, the_object, manipulator,
-                                max_samples, neighbor_r, world_key)
-    rrt_tree.env_mu = 0.8
-    rrt_tree.mnp_mu = 0.8
-    rrt_tree.mnp_fn_max = mnp_fn_max
-    rrt_tree.dist_weight = dist_weight
-    rrt_tree.cost_weight[0] = dist_cost
-    rrt_tree.step_length = step_length
-    rrt_tree.goal_kch = goal_kch
-
-    rrt_tree.initialize_stability_margin_solver(stability_solver)
-
-    t_start = time.time()
-
-    init_mnp = [Contact((-0.5,0.25),(1,0),0),Contact((0.5,0.25),(-1,0),0)]
-    # rrt_tree.x_goal = (0,0,np.pi/2)
-    # path, mnp_path = rrt_tree.search(init_mnp)
-    rrt_tree.x_goal = (0, 0, np.pi)
-    path, mnp_path = rrt_tree.search(init_mnp)
-
-    t_end = time.time()
-    print('time:', t_end - t_start)
-
-    app.get_path(path, mnp_path)
-    app.get_nodes(rrt_tree.trees[0].nodes)
-    app.get_tree(rrt_tree)
-    viewer.start()
-
-    return
-times = []
-stability_solver = StabilityMarginSolver()
-for i in range(0,10):
-    seed_number = i*1000
-    random.seed(seed_number)
-    np.random.seed(seed_number)
-    ti = test_kinorrt_cases(stability_solver, max_samples=1000)
-    print(i)
-    times.append(ti)
-print(times)

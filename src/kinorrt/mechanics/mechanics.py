@@ -1,5 +1,5 @@
 import numpy as np
-#from quadprog import solve_qp
+import quadprog
 #from scipy.optimize import linprog
 from qpsolvers import solve_qp
 
@@ -434,11 +434,11 @@ def qplcp_quadprog(P, q, G, h, A, b):
     qp_C = np.concatenate([A, G], axis=0).T
     qp_b = np.concatenate([b, h], axis=0).flatten()
     meq = A.shape[0]
-    return solve_qp(qp_G, qp_a, qp_C, qp_b, meq)[0:3]
+    return quadprog.solve_qp(qp_G, qp_a, qp_C, qp_b, meq)[0]
 
 def qplcp(P, q, G, h, A, b):
     P = 0.5 * (P + P.T) # make sure P is symmetric
-    q = q.flatten()
+    q = -q.flatten()
     h = h.flatten()
     b = b.flatten()
 
@@ -704,7 +704,7 @@ def qp_inv_mechanics_2d(v, x, mnp, env, mode, world, mnp_mu=0.8, env_mu=0.3, mnp
     q = q.numpy()
 
     # Constraint matrices.
-    G = Sparse()    # inequality
+    G = Sparse()    # inequality Gx>=h
     h = Sparse()
     A = Sparse()    # equality
     b = Sparse()
@@ -735,6 +735,10 @@ def qp_inv_mechanics_2d(v, x, mnp, env, mode, world, mnp_mu=0.8, env_mu=0.3, mnp
 
 
     # Solve.
+    # z = qplcp_quadprog(P, q, G.numpy(), h.numpy(), A.numpy(), b.numpy())
+    # print(z)
+    # z = qplcp(P, q, G.numpy(), h.numpy(), A.numpy(), b.numpy())
+    # print(z)
     try:
         z = qplcp(P, q, G.numpy(), h.numpy(), A.numpy(), b.numpy())
         #zg, ifsuccess = gurobi_solver(P, q, G.numpy(), h.numpy(), A.numpy(), b.numpy())
@@ -876,4 +880,55 @@ def velocity_project_direction(v, mnp, env, mode, mnp_mu=0.8, env_mu=0.3):
 
     return d_proj
 
+def contact_mode_constraints(x, mnp, env, mode, world, mnp_mu=0.8, env_mu=0.3, mnp_fn_max=None):
+    """contact mode constraints object in 2d
+    Arguments:
+        x {np.ndarray} -- object pose (twist)
+        mnp {list} -- list of object frame manipulator contacts [[p, n, d],...]
+        env {list} -- list of object frame environment contacts [[p, n, d],...]
+    Keyword Arguments:
+        mnp_mu {float} -- manipulator friction (default: {0.5})
+        env_mu {float} -- environment friction (default: {0.25})
+    Return:
+        Gq>=h
+        Aq=b
+    """
+    # Get variable sizes.
+
+    n_m = len(mnp)
+    n_c = len(mnp) + len(env)
+    n_z = 3 + 3 * n_c
+
+    # Make contact info.
+    Ad_gcos, depths, mus = contact_info(mnp, env, mnp_mu, env_mu) #, x) for world frame instead
+    #contacts = mnp.copy().extend(env)
+    contacts = list(mnp) + list(env)
+
+    # Constraint matrices.
+    G = Sparse()    # inequality
+    h = Sparse()
+    A = Sparse()    # equality
+    b = Sparse()
+
+    if world == 'planar':
+        add_fm_balance_planar_2d(x, Ad_gcos, mus, A, b)
+        # Add fixed-mode contact constraints.
+        add_fixed_mode_constraints(Ad_gcos, depths, mus, mode, G, h, A, b)
+    elif world == 'vert':
+        # Add force-moment balance.
+        add_fm_balance_vert_2d(x, Ad_gcos, mus, A, b)
+        # Add fixed-mode contact constraints.
+        add_fixed_mode_constraints(Ad_gcos, depths, mus, mode, G, h, A, b)
+        # Add manipulator force limits.
+        if mnp_fn_max is not None:
+            add_mnp_force_limits(n_m, mnp_fn_max, G, h)
+    else:
+        print('world can only be vert or planar')
+        raise
+
+    # Resize to full matrices.
+    G.resize(-1, n_z)
+    A.resize(-1, n_z)
+
+    return G.numpy(), h.numpy(), A.numpy(), b.numpy()
 

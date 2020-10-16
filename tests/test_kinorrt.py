@@ -108,7 +108,7 @@ class iTM2d(Application):
         elif self.example == 'wall':
             self.collision_manager = wall()
         elif self.example == 'table':
-            self.collision_manager = corner()
+            self.collision_manager = table()
         elif self.example == 'obstacle_course':
             self.collision_manager = obstacle_course()
         elif self.example == 'peg-in-hole-v':
@@ -119,8 +119,8 @@ class iTM2d(Application):
             self.collision_manager = book()
         elif self.example == 'unpacking':
             self.collision_manager = unpacking()
-        elif self.example == 'in-hand':
-            self.collision_manager = in_hand()
+        elif self.example == 'pushing':
+            self.collision_manager = pushing()
         else:
             print('Cannot find collision manager!')
             raise
@@ -128,6 +128,7 @@ class iTM2d(Application):
         self.all_configs_on = False
         self.step_on = False
         self.path_on = False
+        self.visualize = False
 
         self.manip_p = None
         self.next_manip_p = None
@@ -329,9 +330,50 @@ class iTM2d(Application):
             time.sleep(0.07)
             self.counter += 1
 
+        if self.visualize:
+            # Draw object.
+            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
+            for i in range(len(self.key_path)):
+                new_m = point_manipulator()
+
+                self.config = self.key_path[i]
+                self.manip_p = self.key_mnp_path[i]
+                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
+                if self.manip_p is not None:
+                    for mnp in self.manip_p:
+                        p = mnp.p
+                        p = p[0:2]
+                        new_m.update_config(np.array(p), self.config)
+                        self.flat_shader.set_vec3('objectColor', get_color('red'))
+                        new_m.obj.draw2d(self.flat_shader.id, True)
+                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
+                self.flat_shader.set_vec3('objectColor', get_color('clay'))
+                T2 = config2trans(np.array(self.config))
+                T3 = np.identity(4)
+                T3[0:2, 3] = T2[0:2, 2]
+                T3[0:2, 0:2] = T2[0:2, 0:2]
+                self.target.transform()[:, :] = T3
+                self.target.draw2d(self.flat_shader.id, True)
+            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
+            i=1
+            while i < len(self.path):
+
+                self.flat_shader.set_vec3('objectColor', get_color('clay'))
+                target_config = self.path[i]
+                T2 = config2trans(np.array(target_config))
+                T3 = np.identity(4)
+                T3[0:2, 3] = T2[0:2, 2]
+                T3[0:2, 0:2] = T2[0:2, 0:2]
+                self.target.transform()[:, :] = T3
+                self.target.draw2d(self.flat_shader.id, True)
+                i+=2
+
+
         if self.path_on:
             glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
             for i in range(len(self.path)):
+                if i % 5 != 0 and i != len(self.path) - 1:
+                    continue
                 self.flat_shader.set_vec3('objectColor', get_color('clay'))
                 target_config = self.path[i]
                 T2 = config2trans(np.array(target_config))
@@ -359,6 +401,7 @@ class iTM2d(Application):
             self.step_on = False
             self.path_on = False
             self.all_configs_on = False
+            self.visualize = False
         if key == glfw.KEY_T and action == glfw.PRESS:
             self.step_on = True
 
@@ -366,6 +409,8 @@ class iTM2d(Application):
             self.all_configs_on = True
         if key == glfw.KEY_P and action == glfw.PRESS:
             self.path_on = True
+        if key == glfw.KEY_V and action == glfw.PRESS:
+            self.visualize = True
 
     def on_key_press(self, key, scancode, action, mods):
         pass
@@ -392,231 +437,11 @@ class iTM2d(Application):
         if buttons == 4:  # right click
             self.camera.mouse_zoom(x, y)
 
-    def get_path(self, path, mnp_path):
-        self.path = path
-        self.mnp_path = mnp_path
+    def get_path(self, paths):
+        self.path, self.mnp_path, self.key_path, self.key_mnp_path = paths
 
     def get_nodes(self, nodes):
         self.nodes = nodes
-    def get_tree(self, tree):
-        self.tree = tree
-
-class Visualizer(Application):
-    def __init__(self, object_shape, example='sofa'):
-        # Initialize scene.
-        super(iTM2d, self).__init__(None)
-
-        self.mesh = Box(1.0, 0.5, 0.2)
-        self.light_box = Box(0.2, 0.2, 0.2)
-        self.example = example
-        self.object_shape = object_shape
-
-    def init(self):
-        # C++ OpenGL.
-        _itbl.loadOpenGL()
-
-        # 2D shader.
-        vertex_source = os.path.join(get_data(), 'shader', '2d.vs')
-        fragment_source = os.path.join(get_data(), 'shader', '2d.fs')
-        self.flat_shader = Shader(vertex_source, fragment_source)
-
-        # Object
-
-        self.env_contacts = None
-        self.manip_contacts = None
-        self.env_contacts = None
-        self.manifold = None
-        self.v_m = None
-        self.counter = 0
-        self.target = _itbl.Rectangle(self.object_shape[0] * 2, self.object_shape[1] * 2, 2, 0.0)
-        if self.example == 'sofa':
-            self.collision_manager = create_hallway(HALLWAY_W, BLOCK_W, BLOCK_H, self.object_shape[
-                0] * 2.5 + BLOCK_W * 0.5)  # uniform_sample_maze((4,4), 3, 1.25)
-        elif self.example == 'maze':
-            self.collision_manager = uniform_sample_maze((3, 3), 3, 1.25)
-        elif self.example == 'corner':
-            self.collision_manager = corner()
-        elif self.example == 'wall':
-            self.collision_manager = wall()
-        elif self.example == 'table':
-            self.collision_manager = corner()
-        elif self.example == 'obstacle_course':
-            self.collision_manager = obstacle_course()
-        elif self.example == 'peg-in-hole-v':
-            self.collision_manager = peg_in_hole_v()
-        elif self.example == 'peg-in-hole-p':
-            self.collision_manager = peg_in_hole_p()
-        elif self.example == 'book':
-            self.collision_manager = book()
-        elif self.example == 'unpacking':
-            self.collision_manager = unpacking()
-        elif self.example == 'in-hand':
-            self.collision_manager = in_hand()
-        else:
-            print('Cannot find collision manager!')
-            raise
-
-        self.all_configs_on = False
-        self.step_on = False
-        self.path_on = False
-
-        self.manip_p = None
-        self.next_manip_p = None
-
-    def draw_manifold(self):
-        if self.manifold is None:
-            return
-
-        glPointSize(5)
-        manifold = self.manifold
-        for i in range(len(manifold.depths)):
-            glBegin(GL_POINTS)
-            cp = manifold.contact_points[i]
-            glVertex3f(cp[0], cp[1], 1)
-            glEnd()
-            glBegin(GL_LINES)
-            d = manifold.depths[i]
-            n = manifold.normals[i]
-            cq = cp - d * n
-            glVertex3f(cp[0], cp[1], 1)
-            glVertex3f(cq[0], cq[1], 1)
-            glEnd()
-
-    def draw_ground(self):
-        glBegin(GL_LINES)
-        # ground line
-        glVertex3f(-10, 0, -1)
-        glVertex3f(10, 0, -1)
-        # hashes
-        for x in np.arange(-10, 10, 0.1):
-            glVertex3f(x, 0, -1)
-            glVertex3f(x - 0.1, -0.1, -1)
-        glEnd()
-
-    def draw_grid(self, size, step):
-        glBegin(GL_LINES)
-
-        glColor3f(0.3, 0.3, 0.3)
-        for i in np.arange(step, size, step):
-            glVertex3f(-size, i, 0)  # lines parallel to X-axis
-            glVertex3f(size, i, 0)
-            glVertex3f(-size, -i, 0)  # lines parallel to X-axis
-            glVertex3f(size, -i, 0)
-
-            glVertex3f(i, -size, 0)  # lines parallel to Z-axis
-            glVertex3f(i, size, 0)
-            glVertex3f(-i, -size, 0)  # lines parallel to Z-axis
-            glVertex3f(-i, size, 0)
-
-        # x-axis
-        glColor3f(0.5, 0, 0)
-        glVertex3f(-size, 0, 0)
-        glVertex3f(size, 0, 0)
-
-        # z-axis
-        glColor3f(0, 0, 0.5)
-        glVertex3f(0, -size, 0)
-        glVertex3f(0, size, 0)
-
-        glEnd()
-
-    def render(self):
-        glClearColor(0.2, 0.3, 0.3, 1.0)
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-        glEnable(GL_DEPTH_TEST)
-        glEnable(GL_MULTISAMPLE)
-        # glEnable(GL_BLEND)
-        # glEnable(GL_CULL_FACE)
-        # glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
-        # glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
-
-        self.flat_shader.use()
-        model = glm.mat4(1.0)
-        self.flat_shader.set_mat4('model', np.asarray(model))
-        view = glm.mat4(1.0)
-        self.flat_shader.set_mat4('view', np.asarray(view))
-        aspect_ratio = 800. / 600.
-        d = 10
-        ortho = glm.ortho(-d * aspect_ratio, d * aspect_ratio, -d, d, -100.0, 100.0)
-        # ortho = glm.ortho(-2*aspect_ratio, 2*aspect_ratio, -2, 2, -100.0, 100.0)
-        self.flat_shader.set_mat4('projection', np.asarray(ortho))
-        self.flat_shader.set_vec3('offset', np.zeros((3, 1), 'float32'))
-        self.flat_shader.set_float('scale', 1.0)
-        self.flat_shader.set_vec3('objectColor', np.ones((3, 1), 'float32'))
-        # self.draw_grid(5, 0.25)
-
-        # Draw obstacles.
-        self.flat_shader.set_vec3('objectColor', get_color('gray'))
-        self.collision_manager.draw(self.flat_shader.id, True, False)
-
-        if self.step_on:
-            # Draw object.
-            new_m = point_manipulator()
-            if self.counter >= len(self.path):
-                self.counter = 0
-
-            self.config = self.path[self.counter]
-            self.manip_p = self.mnp_path[self.counter]
-
-            if self.manip_p is not None:
-                for mnp in self.manip_p:
-                    p = mnp.p
-                    p = p[0:2]
-                    new_m.update_config(np.array(p),self.config)
-                    self.flat_shader.set_vec3('objectColor', get_color('red'))
-                    new_m.obj.draw2d(self.flat_shader.id, True)
-
-            self.flat_shader.set_vec3('objectColor', get_color('clay'))
-            T2 = config2trans(np.array(self.config))
-            T3 = np.identity(4)
-            T3[0:2, 3] = T2[0:2, 2]
-            T3[0:2, 0:2] = T2[0:2, 0:2]
-            self.target.transform()[:, :] = T3
-            self.target.draw2d(self.flat_shader.id, True)
-
-            # print(self.counter, len(self.path))
-            time.sleep(0.07)
-            self.counter += 1
-
-        if self.path_on:
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
-            for i in range(len(self.path)):
-                self.flat_shader.set_vec3('objectColor', get_color('clay'))
-                target_config = self.path[i]
-                T2 = config2trans(np.array(target_config))
-                T3 = np.identity(4)
-                T3[0:2, 3] = T2[0:2, 2]
-                T3[0:2, 0:2] = T2[0:2, 0:2]
-                self.target.transform()[:, :] = T3
-                self.target.draw2d(self.flat_shader.id, True)
-
-        if self.all_configs_on:
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
-            # show all nodes
-            for node in self.nodes:
-                self.flat_shader.set_vec3('objectColor', get_color('clay'))
-                target_config = np.array(node)
-                T2 = config2trans(target_config)
-                T3 = np.identity(4)
-                T3[0:2, 3] = T2[0:2, 2]
-                T3[0:2, 0:2] = T2[0:2, 0:2]
-                self.target.transform()[:, :] = T3
-                self.target.draw2d(self.flat_shader.id, True)
-
-    def on_key_press(self, key, scancode, action, mods):
-        if key == glfw.KEY_C and action == glfw.PRESS:
-            self.step_on = False
-            self.path_on = False
-            self.all_configs_on = False
-        if key == glfw.KEY_T and action == glfw.PRESS:
-            self.step_on = True
-
-        if key == glfw.KEY_A and action == glfw.PRESS:
-            self.all_configs_on = True
-        if key == glfw.KEY_P and action == glfw.PRESS:
-            self.path_on = True
-
     def get_tree(self, tree):
         self.tree = tree
 
@@ -645,15 +470,15 @@ def test_kinorrt_cases(stability_solver, keyword = 'sofa', max_samples = 100):
         object_shape = [0.5, 0.5, 0.2, 0.2]
         X_dimensions = np.array([(0, 4), (0, 4), (-np.pi, np.pi)])
         x_init = (3, 0.5, 0)  # starting location
-        x_goal = (0.707, 0.707, np.pi / 4)
+        x_goal = (0.707, 0.707, -np.pi / 4)
         # x_init = (2, 0.5, 0)
-        # x_goal = (0.5, 0.5, -np.pi / 2)
+        # x_goal = (-3, 0.5, -np.pi / 2)
         world_key = 'vert'
         dist_weight = 1
-        dist_cost = 0.4
         manipulator = doublepoint_manipulator()
-        mnp_fn_max = 6
+        mnp_fn_max = 10
         step_length = 2
+        goal_kch = [1, 1, 1]
     elif keyword == 'wall':
         neighbor_r = 10
         object_shape = [0.5,0.5,0.2,0.2]
@@ -668,33 +493,31 @@ def test_kinorrt_cases(stability_solver, keyword = 'sofa', max_samples = 100):
         mnp_fn_max = 50
         goal_kch = [1,1,0]
     elif keyword == 'table':
-        keyword = 'corner'
-        neighbor_r = 5
-        object_shape = [0.5, 0.25, 0.2, 0.2]
+
+        object_shape = [1, 1, 0.2, 0.2]
         X_dimensions = np.array([(0, 4), (0, 4), (-2*np.pi, 2*np.pi)])
         # x_init = (3, 0.5, 0)  # starting location
         # x_goal = (0.707, 0.707, np.pi / 4)
-        x_init = (2, 0.25, 0)
-        x_goal = (2, 0.25, -np.pi/2)
+        x_init = (2, 1, 0)
+        x_goal = (2, 1, -np.pi/2)
         world_key = 'vert'
-        dist_weight = 100
-        dist_cost = 1
+        dist_weight = 1
         manipulator = doublepoint_manipulator()
         mnp_fn_max = 6
         step_length = 3.14
-        goal_kch = [0,0,1]
+        goal_kch = [0.1, 0.1, 10]
+
     elif keyword == 'obstacle_course':
-        neighbor_r = 5
         object_shape = [0.5, 0.5, 0.2, 0.2]
         X_dimensions = np.array([(-2.5,3), (0, 4), (-2*np.pi, 2*np.pi)])
         x_init = (-2.5, 1.5, 0)
         x_goal = (2.5, 1.5, 0)
         world_key = 'vert'
-        dist_weight = 0.1
+        dist_weight = 0.08
         dist_cost = 1
         manipulator = doublepoint_manipulator()
-        mnp_fn_max = 6
-        goal_kch = [1,1,0]
+        mnp_fn_max = 6.15
+        goal_kch = [0.7,0.2,0]
     elif keyword == 'peg-in-hole-v':
         object_shape = [0.45, 1, 0.2, 0.2]
         X_dimensions = np.array([(-2, 1), (-2, 3), (-np.pi, np.pi)])
@@ -704,7 +527,8 @@ def test_kinorrt_cases(stability_solver, keyword = 'sofa', max_samples = 100):
         dist_weight = 1
         manipulator = doublepoint_manipulator()
         mnp_fn_max = 50
-        goal_kch = [1, 1, 1]
+        goal_kch = [0.5, 0.2, 0.8]
+        init_mnp = [Contact((-0.45, 0.8), (1, 0), 0), Contact((0.45, 0.8), (-1, 0), 0)]
 
     elif keyword == 'peg-in-hole-p':
         object_shape = [0.45, 1, 0.2, 0.2]
@@ -716,6 +540,7 @@ def test_kinorrt_cases(stability_solver, keyword = 'sofa', max_samples = 100):
         manipulator = doublepoint_manipulator()
         mnp_fn_max = 50
         goal_kch = [1, 1, 1]
+
 
     elif keyword == 'unpacking':
         object_shape = [0.39, 1, 0.2, 0.2]
@@ -732,24 +557,24 @@ def test_kinorrt_cases(stability_solver, keyword = 'sofa', max_samples = 100):
         object_shape = [1, 0.2, 0.2, 0.2]
         X_dimensions = np.array([(-4.5, 4.5), (2, 3.5), (-2*np.pi, 2*np.pi)])
         x_init = (0,2.2,0)
-        x_goal = (0,3,-np.pi/2)
+        x_goal = (-2,3,-np.pi/2)
         world_key = 'vert'
         dist_weight = 1
         manipulator = doublepoint_manipulator()
-        mnp_fn_max = 6
+        mnp_fn_max = 15
         goal_kch = [0.01, 0.1, 1]
         allow_contact_edges = [True, False, True, False]
 
-    elif keyword == 'in-hand':
-        object_shape = [1, 1, 0.2, 0.2]
-        X_dimensions = np.array([(-2, 2), (-2, 2), (-1.5*np.pi, 1.5*np.pi)])
-        x_init = (0,-1.5,0)
-        x_goal = (0,-1.5,np.pi)
-        world_key = 'vert'
+    elif keyword == 'pushing':
+        object_shape = [0.5, 1, 0.2, 0.2]
+        X_dimensions = np.array([(-3.1, 3.1), (-2.6,4), (-np.pi, np.pi)])
+        x_init = (-2,-1.25,0)
+        x_goal = (2.1,2.75,0)
+        world_key = 'planar'
         dist_weight = 1
-        manipulator = doublepoint_manipulator()
-        mnp_fn_max = 100
-        goal_kch = [0.1, 0.1, 1]
+        manipulator = point_manipulator()
+        mnp_fn_max = 50
+        goal_kch = [1, 1, 1]
 
     else:
         print('Wrong case keyword!')
@@ -764,8 +589,6 @@ def test_kinorrt_cases(stability_solver, keyword = 'sofa', max_samples = 100):
 
     if keyword == 'book':
         the_object = part(app.target, object_shape, allow_contact_edges)
-    elif keyword == 'in-hand':
-        the_object = inhand_part(app.target)
     else:
         the_object = part(app.target, object_shape)
 
@@ -780,24 +603,27 @@ def test_kinorrt_cases(stability_solver, keyword = 'sofa', max_samples = 100):
     rrt_tree.initialize_stability_margin_solver(stability_solver)
 
     t_start = time.time()
-    if keyword == 'in-hand':
-        init_mnp = [Contact((-1,0),(1,0),0),Contact((-1,0),(1,0),0)]
-        path, mnp_path = rrt_tree.search(init_mnp)
+    if keyword == 'peg-in-hole-v':
+        paths = rrt_tree.search(init_mnp)
     else:
-        path, mnp_path = rrt_tree.search()
+        paths = rrt_tree.search()
     t_end = time.time()
     print('time:', t_end - t_start)
 
-    app.get_path(path, mnp_path)
+    app.get_path(paths)
     app.get_nodes(rrt_tree.trees[0].nodes)
     app.get_tree(rrt_tree)
     viewer.start()
 
-    return
+    return t_end - t_start, len(paths[2])
 
 stability_solver = StabilityMarginSolver()
-for i in [1]:
-    seed_number = i*100
+times = []
+for i in [2]:
+    seed_number = i*1000
     random.seed(seed_number)
     np.random.seed(seed_number)
-    ti = test_kinorrt_cases(stability_solver, 'book', max_samples=30)
+    ti = test_kinorrt_cases(stability_solver, 'obstacle_course', max_samples=200)
+    times.append(ti)
+    print(i)
+print(times)

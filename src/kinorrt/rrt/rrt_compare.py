@@ -7,7 +7,85 @@ from ..mechanics.mechanics import *
 from ..mechanics.stability_margin import *
 from .tree import RRTTree, RRTEdge
 import time
-from itertools import product
+import scipy.optimize
+
+def qlcp_solver(c,M1,M2,G,h,A,b,nvar,lb,ub):
+    b = b.flatten()
+    cons = ({'type': 'ineq', 'fun': lambda z: np.dot(M2,z)*np.dot(M1,z)},
+            {'type': 'ineq', 'fun': lambda z: np.dot(G,z)+h },
+            {'type': 'ineq', 'fun': lambda z: np.dot(M1, z)},
+            {'type': 'eq', 'fun': lambda z: np.dot(A,z)+b })
+    fun = lambda z: np.dot(z[0:3],z[0:3]) - 2*np.dot(c,z[0:3])
+    jac = lambda z: np.concatenate((2*(z[0:3]-c), np.zeros(nvar-3)))
+    bnds = scipy.optimize.Bounds(lb=lb,ub=ub)
+    res = scipy.optimize.minimize(fun, np.zeros(nvar), method='SLSQP', jac=jac, bounds=bnds, constraints=cons)
+
+    return res
+
+def qlcp(x, v, mnp, env, object_weight, mnp_mu=0.8, env_mu=0.3, mnp_fn_max=None):
+
+    x = np.array(x)
+    # Get variable sizes.
+    n_m = len(mnp)
+    n_e = len(env)
+    n_c = n_m + n_e
+    n_var = 3 + 4*n_e + 2*n_m
+
+    # Make contact info.
+    Ad_gcos, depths, mus = contact_info(mnp, env, mnp_mu, env_mu)
+    depths = [0.0]*n_c
+
+    # object gravity
+    f_g = np.array([[0.0],[object_weight],[0.0]])
+    g_ow = np.linalg.inv(twist_to_transform(x))
+    f_o = np.dot(g_ow, f_g)
+
+    n = np.array([[0.0],[1.0],[0.0]])
+    D = np.array([[1.0, -1.0],[0.0, 0.0],[0.0, 0.0]])
+
+    # Gx >= h
+    G = np.zeros((n_c,n_var))
+    h = np.zeros(n_c)
+    # Ax = b
+    A = np.zeros((3, n_var))
+    b = f_o
+    M1 = np.zeros((3*n_e,n_var))
+    M2 = np.zeros((3*n_e,n_var))
+    i_var = 3
+    for i in range(n_c):
+        N_c = np.dot(Ad_gcos[i].T, n)
+        T_c = np.dot(Ad_gcos[i].T, D)
+        nAd_gco = np.dot(n.T, Ad_gcos[i]).flatten()
+        TAd_gco = np.dot(D.T, Ad_gcos[i])
+        if i >= n_e:
+            mu = mnp_mu
+            A[:, i_var:i_var + 2] = np.hstack((N_c, T_c[:,0].reshape((-1,1))))
+            G[i, i_var:i_var + 2] = np.array([mu, -1])
+            i_var += 2
+        else:
+            mu = env_mu
+            A[:, i_var:i_var + 3] = np.hstack((N_c, T_c))
+            G[i, i_var:i_var + 3] = np.array([mu, -1, -1])
+            M1[i*3,0:3] = nAd_gco
+            M1[i*3+1:i*3+3, 0:3] = TAd_gco
+            M1[i*3+1:i*3+3,6+i*4] = 1
+            M2[i*3:(i+1)*3, 3+i*4:3+i*4+4] = 1
+            i_var += 4
+
+    lb = np.zeros(n_var)
+    lb[0:3] = -np.inf
+    3+4*n_e + np.arange(1,2*n_m,2)
+    lb[3+4*n_e + np.arange(1,2*n_m,2)] = -np.inf
+    ub = np.full(n_var, np.inf)
+    if mnp_fn_max is not None:
+        ub[3+4*n_e + np.arange(0,2*n_m,2)] = mnp_fn_max
+
+    res = qlcp_solver(v,M1,M2,G,h,A,b,n_var,lb,ub)
+    if res.success:
+        vx = res.x[0:3]
+    else:
+        vx = np.zeros(3)
+    return vx
 
 
 class Status(enum.Enum):
@@ -23,23 +101,24 @@ def smallfmod(x, y):
         x += y
     return x
 
-def enumerate_hand_modes(n_mnp):
-    if n_mnp == 1:
-        h_modes = np.array([CONTACT_MODE.LIFT_OFF, CONTACT_MODE.STICKING,
-                            CONTACT_MODE.SLIDING_RIGHT, CONTACT_MODE.SLIDING_LEFT]).reshape(-1,1)
-    elif n_mnp == 2:
-        h_modes = np.array([[CONTACT_MODE.STICKING,CONTACT_MODE.STICKING],
-                           [CONTACT_MODE.SLIDING_RIGHT,CONTACT_MODE.SLIDING_RIGHT],
-                            [CONTACT_MODE.SLIDING_LEFT,CONTACT_MODE.SLIDING_LEFT],
-                            [CONTACT_MODE.STICKING,CONTACT_MODE.LIFT_OFF],
-                            [CONTACT_MODE.LIFT_OFF, CONTACT_MODE.STICKING],
-                            [CONTACT_MODE.SLIDING_LEFT,CONTACT_MODE.LIFT_OFF],
-                            [CONTACT_MODE.SLIDING_RIGHT,CONTACT_MODE.LIFT_OFF],
-                            [CONTACT_MODE.LIFT_OFF,CONTACT_MODE.SLIDING_RIGHT],
-                            [CONTACT_MODE.LIFT_OFF,CONTACT_MODE.SLIDING_LEFT]])
-    return h_modes
+def get_both_velocities(x_rand, x_near):
+    x_rand = np.array(x_rand)
+    x_rand_ = x_rand[:]
+    x = np.array(x_near)
+    g_v = np.identity(3)
+    g_v[0:2, 0:2] = config2trans(x)[0:2, 0:2]
 
-class RRTManipulation(object):
+    v_star = np.dot(g_v.T, x_rand - np.array(x))
+
+    if v_star[2] > 0:
+        x_rand_[2] = x_rand[2] - 2 * np.pi
+    else:
+        x_rand_[2] = x_rand[2] + 2 * np.pi
+
+    v_star_ = np.dot(g_v.T, x_rand_ - x)
+    return v_star, v_star_
+
+class RRT1(object):
     def __init__(self, X, x_init, x_goal, envir, object, manipulator, max_samples, r=5, world='planar'):
         """
         Template RRTKinodynamic Planner
@@ -69,7 +148,6 @@ class RRTManipulation(object):
         self.cost_weight = [0.2, 1, 1]
         self.step_length = 2
         self.mnp_fn_max = None
-        self.h_modes = enumerate_hand_modes(self.manipulator.npts)
 
     def add_tree(self):
         """
@@ -79,9 +157,6 @@ class RRTManipulation(object):
 
     def set_world(self, key):
         self.world = key
-
-    def initialize_stability_margin_solver(self, solver):
-        self.smsolver = solver
 
     def dist(self, p, q):
         cx = (p[0] - q[0]) ** 2
@@ -197,7 +272,7 @@ class RRTManipulation(object):
             mnp_path += [self.trees[tree].edges[current].manip] * len(current_path)
             current = self.trees[tree].edges[current].parent
 
-            print(current, self.trees[tree].edges[current].score)
+            print(current)
         current_path = self.trees[tree].edges[current].path
         path += current_path
         mnp_path += [self.trees[tree].edges[current].manip] * len(current_path)
@@ -209,8 +284,6 @@ class RRTManipulation(object):
 
         path.reverse()
         mnp_path.reverse()
-        key_path.reverse()
-        key_path.append(x_goal)
         print('number of nodes', n_nodes)
         return path, mnp_path, key_path, key_mnp_path
 
@@ -229,7 +302,6 @@ class RRTManipulation(object):
             path_i.reverse()
             _, envs = self.check_collision(x_new)
             edge_ = RRTEdge(parent, mnps, envs, path_i, mode)
-            edge_.score = edge.score
             self.trees[tree].add(x_new, edge_)
             i += d_i
 
@@ -241,6 +313,7 @@ class RRTManipulation(object):
     def check_collision(self, x):
         if_collide, w_contacts = self.environment.check_collision(self.object, x)
         contacts = self.object.contacts2objframe(w_contacts, x)
+
         return if_collide, contacts
 
     def check_penetration(self, contacts):
@@ -310,9 +383,9 @@ class RRTManipulation(object):
         return ifReturn, mnp, mnp_config
 
     # @profile
-    def best_mnp_location(self, tree, x_near, x_rand, mode, vel):
+    def best_mnp_location(self, tree, x_near, x_rand, vel):
 
-        n_sample = 1
+        n_sample = 5
 
         g_v = np.identity(3)
         g_v[0:2, 0:2] = config2trans(x_near)[0:2, 0:2]
@@ -325,31 +398,22 @@ class RRTManipulation(object):
         dist_list = []
         if mnps is not None:
             mnps_list.append(mnps)
-            # score = self.smsolver.compute_stablity_margin(self.env_mu, self.mnp_mu, envs, mnps, mode,
-            #                                                self.object_weight, self.mnp_fn_max, self.dist_weight)
+
             score = 0
             score_list.append(score)
-            v = self.inverse_mechanics(x_near, v_star, envs, mnps, mode)
+            v = self.inverse_mechanics(x_near, v_star, envs, mnps)
             dist_list.append(self.dist(v, v_star))
 
         for i in range(n_sample):
             ifsampled, mnps, _ = self.resample_manipulator_contacts(tree, x_near)
-            # check if key points sampled
-            # ep0 = np.array([envs[0].p[0], envs[1].p[0]])
-            # mm = np.array(mode[2:])
-            # if ifsampled and x_near[0]<0 and (mnps[0].p[1] < 0 or mnps[1].p[1] < 0) \
-            #         and mm[ep0>0] == CONTACT_MODE.STICKING and mm[ep0<0] == CONTACT_MODE.LIFT_OFF:
-            #     print('sampled')
             if ifsampled:
-                v = self.inverse_mechanics(x_near, v_star, envs, mnps, mode)
+                v = self.inverse_mechanics(x_near, v_star, envs, mnps)
                 if np.linalg.norm(v) > 1e-3:
                     mnps_list.append(mnps)
-
-                    # score = self.smsolver.compute_stablity_margin(self.env_mu, self.mnp_mu, envs, mnps, mode,
-                    #                                               10, self.mnp_fn_max, self.dist_weight)
                     score = 0.1
                     score_list.append(score)
                     dist_list.append(self.dist(v, v_star))
+                    break
 
         # how to choose the best manipulator location, what's the metric?
 
@@ -360,18 +424,14 @@ class RRTManipulation(object):
         else:
             return None
 
-    def inverse_mechanics(self, x, v_star, envs, mnps, mode):
-        if mode is None:
-            print('mode cannot be None for RRTKino_w_modes class')
-            raise
+    def inverse_mechanics(self, x, v_star, envs, mnps):
 
-        # mnps = [(np.array(m.p), np.array(m.n), m.d) for m in mnps]
-        # envs = [(np.array(m.p), np.array(m.n), m.d) for m in envs]
-        v = qp_inv_mechanics_2d(np.array(v_star), np.array(x), mnps, envs, mode, self.world, self.mnp_mu, self.env_mu,
-                                self.mnp_fn_max)
+        v = qlcp(x, v_star, mnps, envs, self.object_weight,self.mnp_mu,self.env_mu,self.mnp_fn_max)
+        # v = qp_inv_mechanics_2d(np.array(v_star), np.array(x), mnps, envs, mode, self.world, self.mnp_mu, self.env_mu,
+        #                         self.mnp_fn_max)
         return v
 
-    def forward_integration(self, x_near, x_rand, envs, mnps, mode):
+    def forward_integration(self, x_near, x_rand, envs, mnps):
         # all collision checking, event detection , timestepping, ...
         counter = 0
         h = 0.2
@@ -385,14 +445,14 @@ class RRTManipulation(object):
 
         v_star = np.dot(g_v.T, x_rand - np.array(x))
 
-        v = self.inverse_mechanics(x, v_star, envs, mnps, mode)
+        v = self.inverse_mechanics(x, v_star, envs, mnps)
         if np.linalg.norm(v) < 1e-3:
             if v_star[2] > 0:
                 x_rand[2] = x_rand[2] - 2 * np.pi
             else:
                 x_rand[2] = x_rand[2] + 2 * np.pi
             v_star = np.dot(g_v.T, x_rand - np.array(x))
-            v = self.inverse_mechanics(x, v_star, envs, mnps, mode)
+            v = self.inverse_mechanics(x, v_star, envs, mnps)
             if np.linalg.norm(v) < 1e-3:
                 return tuple(x), path, Status_manipulator_collide
 
@@ -402,39 +462,14 @@ class RRTManipulation(object):
 
         # TODO: velocity-mode-projection: v_star = v_star*d_proj
 
-        d_proj = velocity_project_direction(v_star, mnps, envs, mode)
-        if sum(d_proj) == 0:
-            d_proj = v_star / np.linalg.norm(v_star)
-        v_star_proj = np.dot(v_star, d_proj) * d_proj
-
-        #v_star_proj = v_star
-        # finger mode
-        finger_mode = np.array(mode[0:len(mnps)])
-        if CONTACT_MODE.LIFT_OFF in finger_mode:
-            cm = len(mnps)
-            remain_idx = finger_mode != CONTACT_MODE.LIFT_OFF
-            mnps = list(np.array(mnps)[remain_idx])
-            finger_mode = finger_mode[remain_idx]
-            mode = list(finger_mode) + mode[cm:]
-
-        while np.linalg.norm(v_star_proj) > 1e-2 and counter < max_counter:
+        while np.linalg.norm(v_star) > 1e-2 and counter < max_counter:
             g_v = np.identity(3)
             g_v[0:2, 0:2] = config2trans(x)[0:2, 0:2]
             counter += 1
             # v = self.inverse_mechanics(x, v_star, envs, mnps, mode)
-            v = self.inverse_mechanics(x, v_star_proj, envs, mnps, mode)
+            v = self.inverse_mechanics(x, v_star, envs, mnps)
             if np.linalg.norm(v) < 1e-3:
                 break
-
-            # finger mode
-            for i_finger in range(len(mnps)):
-                fm = finger_mode[i_finger]
-                if fm == CONTACT_MODE.SLIDING_LEFT:
-                    mnps[i_finger].p = []
-                    pass
-                elif fm == CONTACT_MODE.SLIDING_RIGHT:
-                    mnps[i_finger].p = []
-                    pass
 
             # check collision
             x_ = x.flatten() + np.dot(g_v, v).flatten()
@@ -447,23 +482,9 @@ class RRTManipulation(object):
             # ifpenetrate = False
             if not ifpenetrate:
                 # update x if not collide
-
-                # check the number of envs contacts
-                if len(envs) != len(contacts):
-                    if len(contacts) == (sum(np.array(mode) != CONTACT_MODE.LIFT_OFF) - len(mnps)):
-                        mode = list(np.array(mode)[np.array(mode) != CONTACT_MODE.LIFT_OFF])
-                    else:
-                        x = x_
-                        path.append(tuple(x))
-                        break
-                else:
-                    is_same_contacts = True
-                    for i in range(len(envs)):
-                        if not envs[i].is_same(contacts[i]):
-                            is_same_contacts = False
-                    if not is_same_contacts:
-                        break
-
+                if not static_equilibrium(x, mnps, contacts, self.world,
+                                      self.mnp_mu, self.env_mu, self.mnp_fn_max):
+                    break
                 x = x_
                 path.append(tuple(x))
                 envs = contacts
@@ -472,8 +493,7 @@ class RRTManipulation(object):
                 v_star = np.dot(g_v.T, x_rand - x)
                 if np.linalg.norm(v_star) > h:
                     v_star = steer(0, v_star, h)
-                v_star_proj = np.dot(v_star, d_proj) * d_proj
-                #v_star_proj = v_star
+
             else:
                 # return x backward at collisiton
                 depths = np.array([c.d for c in contacts])
@@ -537,14 +557,8 @@ class RRTManipulation(object):
         return is_feasible, d_proj, d_proj_
 
     # @profile
-    def extend_w_mode(self, tree, x_near, x_rand, mode, v, v_):
-        # Todo: use stability margin to choose ?
+    def extend(self, tree, x_near, x_rand, vel):
 
-        if np.linalg.norm(v) > 1e-4:
-            vel = v
-
-        else:
-            vel = v_
         # h = self.step_length
 
         # collision check, get envs
@@ -556,14 +570,14 @@ class RRTManipulation(object):
         if (self.trees[tree].edges[x_near].manip is None) \
                 or self.trees[tree].edges[x_near].manipulator_collide:
             # Todo: sample good manipulator location given conact mode
-            mnps = self.best_mnp_location(tree, x_near, x_rand, mode, vel)
+            mnps = self.best_mnp_location(tree, x_near, x_rand, vel)
 
         if mnps is None:
-            return x_near, Status.TRAPPED, None, 0.0
+            return x_near, Status.TRAPPED, None
 
 
         # forward (ITM)
-        x_new, path, status_mnp_collide = self.forward_integration(x_near, x_rand, envs, mnps, mode)
+        x_new, path, status_mnp_collide = self.forward_integration(x_near, x_rand, envs, mnps)
         x_new = tuple(x_new)
 
         if self.dist(x_near, x_new) < 1e-3:
@@ -575,56 +589,28 @@ class RRTManipulation(object):
             status = Status.ADVANCED
 
         # add node and edge
-        stability_margin_score = 0.0
         edge = None
         if status != Status.TRAPPED:
-            # e_modes = np.array(get_contact_modes([], envs))
-            # e_modes = e_modes[~np.all(e_modes == CONTACT_MODE.LIFT_OFF, axis=1)]
-            # preprocess = self.smsolver.preprocess(x_near, self.env_mu, self.mnp_mu, envs, mnps, e_modes, self.h_modes,
-            #                                       self.object_weight, self.mnp_fn_max)
-            # # vel_ = self.inverse_mechanics(x_near, vel, envs, mnps, mode)
-            # stability_margin_score = self.smsolver.stability_margin(preprocess, vel, mode)
-            # # test_score, pp, vv, mm = self.smsolver.test2d()
-            # # ss = self.smsolver.stability_margin(pp, vv, mm)
-
             path.reverse()
             _, new_envs = self.check_collision(x_new)
-            edge = RRTEdge(x_near, mnps, new_envs, path, mode)
+            edge = RRTEdge(x_near, mnps, new_envs, path, None)
             edge.manipulator_collide = status_mnp_collide
-            edge.score = stability_margin_score
-            if stability_margin_score < 0:
-                print('zero score')
-        return x_new, status, edge, stability_margin_score
+
+        return x_new, status, edge
 
     # @profile
-    def extend_w_mode_changemnp(self, tree, x_near, x_rand, mode, v, v_):
-        # Todo: use stability margin to choose ?
-
-        # h = self.step_length
-        # if np.linalg.norm(np.array(x_near) - np.array(x_rand)) > h:
-        #     x_rand = steer(x_near, x_rand, h)
+    def extend_changemnp(self, tree, x_near, x_rand, vel):
 
         # collision check, get envs
         envs = self.trees[tree].edges[x_near].env
         # manipulator contacts: sample from the previous one or new mnps
-        # Todo: change manipulator location when stability margin is low
-        if np.linalg.norm(v) > 1e-4:
-            mnps = self.best_mnp_location(tree, x_near, x_rand, mode, v)
-            vel = v
-        else:
-            mnps = self.best_mnp_location(tree, x_near, x_rand, mode, v_)
-            vel = v_
+        mnps = self.best_mnp_location(tree, x_near, x_rand,  vel)
 
         if mnps is None:
-            return x_near, Status.TRAPPED, None, 0.0
-
-        # stability_margin_score = self.smsolver.compute_stablity_margin(self.env_mu, self.mnp_mu, envs, mnps, mode,
-        #                                                                self.object_weight, self.mnp_fn_max,
-        #                                                                self.dist_weight)
-        stability_margin_score = 0.0
+            return x_near, Status.TRAPPED, None
 
         # forward (ITM)
-        x_new, path, status_mnp_collide = self.forward_integration(x_near, x_rand, envs, mnps, mode)
+        x_new, path, status_mnp_collide = self.forward_integration(x_near, x_rand, envs, mnps)
         path.reverse()
         x_new = tuple(x_new)
 
@@ -639,34 +625,27 @@ class RRTManipulation(object):
         edge = None
         if status != Status.TRAPPED:
             _, envs = self.check_collision(x_new)
-            edge = RRTEdge(x_near, mnps, envs, path, mode)
+            edge = RRTEdge(x_near, mnps, envs, path, None)
             edge.manipulator_collide = status_mnp_collide
 
-            # e_modes = np.array(get_contact_modes([], envs))
-            # e_modes = e_modes[~np.all(e_modes == CONTACT_MODE.LIFT_OFF, axis=1)]
-            # preprocess = self.smsolver.preprocess(x_near, self.env_mu, self.mnp_mu, envs, mnps, e_modes, self.h_modes,
-            #                                       self.object_weight, self.mnp_fn_max)
-            # # vel_ = self.inverse_mechanics(x_near, vel, envs, mnps, mode)
-            # stability_margin_score = self.smsolver.stability_margin(preprocess, vel, mode)
 
-            edge.score = stability_margin_score
-
-        return x_new, status, edge, stability_margin_score
+        return x_new, status, edge
 
     # @profile
     def search(self, init_mnp=None):
+        t_start = time.time()
         _, init_envs = self.check_collision(self.x_init)
         edge = RRTEdge(None, init_mnp, init_envs, None, None)
         self.trees[0].add(self.x_init, edge)
-        init_modes = self.contact_modes(self.x_init, init_envs)
-        self.trees[0].add_mode_enum(self.x_init, init_modes)
+        # init_modes = self.contact_modes(self.x_init, init_envs)
+        # self.trees[0].add_mode_enum(self.x_init, init_modes)
         start_flag = True
         while self.samples_taken < self.max_samples:
             x_nearest, d_nearest = self.get_goal_nearest(0)
             if d_nearest < 0.04:
                 print('GOAL REACHED. Nearest state: ', x_nearest, ', dist: ', d_nearest)
                 paths = self.reconstruct_path(0, self.x_init, x_nearest)
-                return paths
+                return paths, True, self.samples_taken
 
             if random.randint(0, 3) == 1 and not start_flag:
                 # x_rand = self.x_goal
@@ -679,39 +658,47 @@ class RRTManipulation(object):
                 self.trees[0].goal_expand[x_near] = True
 
             near_envs = self.trees[0].edges[x_near].env
-            if x_near in self.trees[0].enum_modes:
-                near_modes = self.trees[0].enum_modes[x_near]
+            # if x_near in self.trees[0].enum_modes:
+            #     near_modes = self.trees[0].enum_modes[x_near]
+            # else:
+            #     near_modes = self.contact_modes(x_near, near_envs)
+            #     self.trees[0].add_mode_enum(x_near, near_modes)
+
+            v_star, v_star_ = get_both_velocities(x_rand, x_near)
+            if self.trees[0].edges[x_near].manip is None:
+                ifextend = True
+                v = v_star
             else:
-                near_modes = self.contact_modes(x_near, near_envs)
-                self.trees[0].add_mode_enum(x_near, near_modes)
-
-            for m in near_modes:
-                is_feasible, v, v_ = self.is_feasible_velocity(0, x_near, x_rand, m)
-                if not is_feasible:
-                    # print('velocity infeasible for this mode')
-                    continue
-                elif self.trees[0].edges[x_near].manip is not None:
-                    v_pre = self.inverse_mechanics(x_near, v, near_envs, self.trees[0].edges[x_near].manip, m)
-                    v_pre_ = self.inverse_mechanics(x_near, v_, near_envs, self.trees[0].edges[x_near].manip, m)
-                    ifextend = np.linalg.norm(v_pre) > 1e-3 or np.linalg.norm(v_pre_) > 1e-3
-                else:
+                v_pre = self.inverse_mechanics(x_near, v_star, near_envs, self.trees[0].edges[x_near].manip)
+                v_pre_ = self.inverse_mechanics(x_near, v_star_, near_envs, self.trees[0].edges[x_near].manip)
+                if np.linalg.norm(v_pre) > 1e-3:
+                    v = v_pre
                     ifextend = True
-
-                if ifextend:
-                    x_new, status, edge, score = self.extend_w_mode(0, x_near, x_rand, m, v, v_)
+                elif np.linalg.norm(v_pre_) > 1e-3:
+                    v = v_pre
+                    ifextend = True
                 else:
-                    x_new, status, edge, score = self.extend_w_mode_changemnp(0, x_near, x_rand, m, v, v_)
-                if status != Status.TRAPPED and self.dist(x_new, self.get_nearest(0, x_new)) > 1e-3:
-                    self.trees[0].add(x_new, edge)
-                    self.samples_taken += 1
-                    print('sample ', self.samples_taken, ', x: ', x_new, 'mode', m, 'score', score)
-                    self.add_waypoints_to_tree(0, edge)
+                    v = v_star
+                    ifextend = False
 
+            if ifextend:
+                x_new, status, edge = self.extend(0, x_near, x_rand, v)
+            else:
+                x_new, status, edge = self.extend_changemnp(0, x_near, x_rand, v)
+            if status != Status.TRAPPED and self.dist(x_new, self.get_nearest(0, x_new)) > 1e-3:
+                self.trees[0].add(x_new, edge)
+                self.samples_taken += 1
+                print('sample ', self.samples_taken, ', x: ', x_new)
+                self.add_waypoints_to_tree(0, edge)
+
+            t_end = time.time()
+            if t_end - t_start > self.max_time:
+                break
         x_nearest, d_nearest = self.get_goal_nearest(0)
         print('GOAL NOT REACHED. Nearest state: ', x_nearest, ', dist: ', d_nearest)
         paths = self.reconstruct_path(0, self.x_init, x_nearest)
 
-        return paths
+        return paths, False, self.samples_taken
 
 
 

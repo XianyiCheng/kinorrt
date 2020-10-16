@@ -8,7 +8,7 @@ def RectangleBox(width, length):
 
 class point_manipulator(object):
     def __init__(self):
-        self.obj = RectangleBox(0.2,0.2)
+        self.obj = RectangleBox(0.1,0.1)
         self.npts = 1
 
     def contacts2mnpframe(self, w_contacts, x):
@@ -34,9 +34,14 @@ class point_manipulator(object):
         return
 
     def if_collide_w_env(self, envir, config, part_config):
+        if_collide = False
         self.update_config(config, part_config)
         manifold0 = envir.collision_manager.collide(self.obj)
-        if_collide = len(manifold0.depths) != 0
+
+        if len(manifold0.depths) != 0:
+            d = min(manifold0.depths)
+            if d < -1e-3:
+                if_collide = True
         return if_collide
 
     def score_collide_w_env(self, envir, config, part_config):
@@ -84,10 +89,14 @@ class doublepoint_manipulator(object):
         return
 
     def if_collide_w_env(self, envir, config, part_config):
+        if_collide = False
         self.update_config(config, part_config)
         manifold0 = envir.collision_manager.collide(self.obj[0])
         manifold1 = envir.collision_manager.collide(self.obj[1])
-        if_collide = (len(manifold0.depths) + len(manifold1.depths)) != 0
+        if len(manifold0.depths) != 0:
+            if_collide = min(manifold0.depths) < -1e-3
+        if not if_collide and len(manifold1.depths) != 0:
+            if_collide = min(manifold1.depths) < -1e-3
         if self.config_bounds is not None:
             p1 = self.obj[0].transform()[0:2,-1]
             p2 = self.obj[1].transform()[0:2,-1]

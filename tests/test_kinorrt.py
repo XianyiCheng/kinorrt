@@ -481,16 +481,16 @@ def test_kinorrt_cases(stability_solver, keyword = 'sofa', max_samples = 100):
         goal_kch = [1, 1, 1]
     elif keyword == 'wall':
         neighbor_r = 10
-        object_shape = [0.5,0.5,0.2,0.2]
+        object_shape = [0.5,0.2,0.2,0.2]
         X_dimensions = np.array([(-8, 8), (0, 7 + object_shape[1]*4), (-np.pi, np.pi)])
-        x_init = (4.5, 0.5, 0)
-        x_goal = (-3, 7.5, 0)
+        x_init = (4.5, object_shape[1], 0)
+        x_goal = (-3, 7+object_shape[1], 0)
         world_key = 'vert'
         dist_weight = 1
-        dist_cost = 0.2
+        dist_cost = 0.1
         manipulator = point_manipulator()
         step_length = 10
-        mnp_fn_max = 50
+        mnp_fn_max = 100
         goal_kch = [1,1,0]
     elif keyword == 'table':
 
@@ -619,11 +619,11 @@ def test_kinorrt_cases(stability_solver, keyword = 'sofa', max_samples = 100):
 
 stability_solver = StabilityMarginSolver()
 times = []
-for i in [2]:
+for i in range(10):
     seed_number = i*1000
     random.seed(seed_number)
     np.random.seed(seed_number)
-    ti = test_kinorrt_cases(stability_solver, 'obstacle_course', max_samples=200)
+    ti = test_kinorrt_cases(stability_solver, 'wall', max_samples=200)
     times.append(ti)
     print(i)
 print(times)

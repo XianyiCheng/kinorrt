@@ -8,7 +8,7 @@ def RectangleBox(width, length):
 
 class point_manipulator(object):
     def __init__(self):
-        self.obj = RectangleBox(0.1,0.1)
+        self.obj = RectangleBox(0.15,0.15)
         self.npts = 1
 
     def contacts2mnpframe(self, w_contacts, x):

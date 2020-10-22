@@ -178,45 +178,65 @@ class RRTManipulationStability(object):
         :return: sequence of vertices from start to goal
         """
         n_nodes = 2
-        path = [x_goal]
+        path = []
         current = x_goal
-        mnp_path = [None]
-        key_path = []
-        key_mnp_path = []
+        print(current, self.trees[tree].edges[current].mode, self.trees[tree].edges[current].score)
+        mnp_path = []
+        velocity_path = []
+        mode_path = []
+        env_path = []
+
         if x_init == x_goal:
             return path, mnp_path
+
         while not self.trees[tree].edges[current].parent == x_init:
             # path.append(self.trees[tree].E[current])
             n_nodes += 1
 
-            key_path.append(self.trees[tree].edges[current].parent)
-            key_mnp_path.append(self.trees[tree].edges[current].manip)
-
             current_path = self.trees[tree].edges[current].path
             path += current_path
             mnp_path += [self.trees[tree].edges[current].manip] * len(current_path)
+            pp = self.trees[tree].edges[current].paths[1]
+            pp.reverse()
+            velocity_path += pp
+            pp = self.trees[tree].edges[current].paths[2]
+            pp.reverse()
+            env_path += pp
+            pp = self.trees[tree].edges[current].paths[3]
+            pp.reverse()
+            mode_path += pp
             current = self.trees[tree].edges[current].parent
 
-            print(current, self.trees[tree].edges[current].score)
+            print(current, self.trees[tree].edges[current].mode, self.trees[tree].edges[current].score)
         current_path = self.trees[tree].edges[current].path
         path += current_path
         mnp_path += [self.trees[tree].edges[current].manip] * len(current_path)
-        key_path.append(self.trees[tree].edges[current].parent)
-        key_mnp_path.append(self.trees[tree].edges[current].manip)
-
-        path.append(x_init)
-        mnp_path.append(None)
+        pp = self.trees[tree].edges[current].paths[1]
+        pp.reverse()
+        velocity_path += pp
+        pp = self.trees[tree].edges[current].paths[2]
+        pp.reverse()
+        env_path += pp
+        pp = self.trees[tree].edges[current].paths[3]
+        pp.reverse()
+        mode_path += pp
+        print(current, self.trees[tree].edges[current].mode, self.trees[tree].edges[current].score)
+        #path.append(x_init)
+        #mnp_path.append(None)
 
         path.reverse()
         mnp_path.reverse()
-        key_path.reverse()
-        key_path.append(x_goal)
+        velocity_path.reverse()
+        env_path.reverse()
+        mode_path.reverse()
+
         print('number of nodes', n_nodes)
-        return path, mnp_path, key_path, key_mnp_path
+        return path, velocity_path, mnp_path, env_path, mode_path
 
     def add_waypoints_to_tree(self, tree, edge):
         parent = edge.parent
         path = edge.path[:]
+        paths = edge.paths
         path.reverse()
         mode = edge.mode
         mnps = edge.manip
@@ -227,9 +247,11 @@ class RRTManipulationStability(object):
             x_new = path[i]
             path_i = path[0:i + 1]
             path_i.reverse()
+            paths_i = (paths[0][0:i+1],paths[1][0:i+1],paths[2][0:i+1],paths[3][0:i+1])
             _, envs = self.check_collision(x_new)
             edge_ = RRTEdge(parent, mnps, envs, path_i, mode)
             edge_.score = edge.score
+            edge_.paths = paths_i
             self.trees[tree].add(x_new, edge_)
             i += d_i
 
@@ -380,6 +402,9 @@ class RRTManipulationStability(object):
         x_rand = np.array(x_rand)
         x = np.array(x_near)
         path = [tuple(x)]  # TODO: hack
+        env_path = [envs]
+        mode_path = [mode]
+        velocity_path = []
         g_v = np.identity(3)
         g_v[0:2, 0:2] = config2trans(x)[0:2, 0:2]
 
@@ -394,7 +419,7 @@ class RRTManipulationStability(object):
             v_star = np.dot(g_v.T, x_rand - np.array(x))
             v = self.inverse_mechanics(x, v_star, envs, mnps, mode)
             if np.linalg.norm(v) < 1e-3:
-                return tuple(x), path, Status_manipulator_collide
+                return tuple(x), path, Status_manipulator_collide,[]
 
         max_counter = int(np.linalg.norm(v_star) / h) * 10
         if np.linalg.norm(v_star) > h:
@@ -457,6 +482,9 @@ class RRTManipulationStability(object):
                     else:
                         x = x_
                         path.append(tuple(x))
+                        velocity_path.append(v)
+                        env_path.append(contacts)
+                        mode_path.append(mode)
                         break
                 else:
                     is_same_contacts = True
@@ -468,6 +496,9 @@ class RRTManipulationStability(object):
 
                 x = x_
                 path.append(tuple(x))
+                velocity_path.append(v)
+                env_path.append(contacts)
+                mode_path.append(mode)
                 envs = contacts
                 g_v = np.identity(3)
                 g_v[0:2, 0:2] = config2trans(x)[0:2, 0:2]
@@ -490,23 +521,41 @@ class RRTManipulationStability(object):
                 if abs(k_new) < 1:
                     v = k_new * v
                     x = x + np.dot(g_v, v).flatten()
+                    _, contacts = self.check_collision(x)
                     path.append(tuple(x))
+                    velocity_path.append(v)
+                    env_path.append(contacts)
+                    mode_path.append(mode)
                 elif d_max < 0.1:
                     x = x + np.dot(g_v, v).flatten()
                     path.append(tuple(x))
+                    velocity_path.append(v)
+                    env_path.append(contacts)
+                    mode_path.append(mode)
                 break
+        velocity_path.append(np.zeros(3))
         path_ = [path[0]]
+        velocity_path_ = [velocity_path[0]]
+        env_path_ = [env_path[0]]
+        mode_path_ = [mode_path[0]]
         for i in range(len(path)):
-            if np.linalg.norm(np.array(path_[-1]) - np.array(path[i])) > h / 5:
+            if np.linalg.norm(np.array(path_[-1]) - np.array(path[i])) > 0.1:
                 path_.append(path[i])
+                velocity_path_ .append(velocity_path[i])
+                env_path_.append(env_path[i])
+                mode_path_.append(mode_path[i])
 
         if path[-1] not in path_:
             path_.append(path[-1])
+            velocity_path_.append(velocity_path[i])
+            env_path_.append(env_path[i])
+            mode_path_.append(mode_path[i])
 
         if np.linalg.norm(x) > 1000:
             print('something wrong')
+        paths = (path_, velocity_path_, env_path_, mode_path_)
 
-        return tuple(x), path_, Status_manipulator_collide
+        return tuple(x), path_, Status_manipulator_collide, paths
 
     def is_feasible_velocity(self, tree, x_near, x_rand, mode):
         # check is there posive feasible velocity to the x-rand under this mode
@@ -568,7 +617,7 @@ class RRTManipulationStability(object):
 
 
         # forward (ITM)
-        x_new, path, status_mnp_collide = self.forward_integration(x_near, x_rand, envs, mnps, mode)
+        x_new, path, status_mnp_collide, paths = self.forward_integration(x_near, x_rand, envs, mnps, mode)
         x_new = tuple(x_new)
 
         if self.dist(x_near, x_new) < 1e-3:
@@ -584,20 +633,19 @@ class RRTManipulationStability(object):
         edge = None
         if status != Status.TRAPPED:
             if len(envs)>0:
-                e_modes = np.array(get_contact_modes([], envs))
+                e_modes = np.array(get_contact_modes([], self.trees[tree].edges[x_near].env))
                 e_modes = e_modes[~np.all(e_modes == CONTACT_MODE.LIFT_OFF, axis=1)]
-                preprocess = self.smsolver.preprocess(x_near, self.env_mu, self.mnp_mu, envs, mnps, e_modes, self.h_modes,
-                                                      self.object_weight, self.mnp_fn_max)
-                # vel_ = self.inverse_mechanics(x_near, vel, envs, mnps, mode)
-                stability_margin_score = self.smsolver.stability_margin(preprocess, vel, mode)
-                # # test_score, pp, vv, mm = self.smsolver.test2d()
-                # # ss = self.smsolver.stability_margin(pp, vv, mm)
+
+                stability_margin_score = self.smsolver.compute_stability_margin(x_near, vel, self.env_mu, self.mnp_mu, self.trees[tree].edges[x_near].env, mnps, mode, e_modes, self.h_modes,
+                                                      self.object_weight, self.mnp_fn_max)[0]
+
 
             path.reverse()
             _, new_envs = self.check_collision(x_new)
             edge = RRTEdge(x_near, mnps, new_envs, path, mode)
             edge.manipulator_collide = status_mnp_collide
             edge.score = stability_margin_score
+            edge.paths = paths
             if stability_margin_score < 0:
                 print('zero score')
         return x_new, status, edge, stability_margin_score
@@ -624,13 +672,11 @@ class RRTManipulationStability(object):
         if mnps is None:
             return x_near, Status.TRAPPED, None, 0.0
 
-        # stability_margin_score = self.smsolver.compute_stablity_margin(self.env_mu, self.mnp_mu, envs, mnps, mode,
-        #                                                                self.object_weight, self.mnp_fn_max,
-        #                                                                self.dist_weight)
+
         stability_margin_score = 0.0
 
         # forward (ITM)
-        x_new, path, status_mnp_collide = self.forward_integration(x_near, x_rand, envs, mnps, mode)
+        x_new, path, status_mnp_collide, paths = self.forward_integration(x_near, x_rand, envs, mnps, mode)
         path.reverse()
         x_new = tuple(x_new)
 
@@ -648,16 +694,16 @@ class RRTManipulationStability(object):
 
             if len(envs) > 0:
 
-                e_modes = np.array(get_contact_modes([], envs))
+                e_modes = np.array(get_contact_modes([], self.trees[tree].edges[x_near].env))
                 e_modes = e_modes[~np.all(e_modes == CONTACT_MODE.LIFT_OFF, axis=1)]
-                preprocess = self.smsolver.preprocess(x_near, self.env_mu, self.mnp_mu, envs, mnps, e_modes, self.h_modes,
-                                                      self.object_weight, self.mnp_fn_max)
-                # vel_ = self.inverse_mechanics(x_near, vel, envs, mnps, mode)
-                stability_margin_score = self.smsolver.stability_margin(preprocess, vel, mode)
+
+                stability_margin_score = self.smsolver.compute_stability_margin(x_near, vel, self.env_mu, self.mnp_mu, self.trees[tree].edges[x_near].env, mnps, mode, e_modes, self.h_modes,
+                                                      self.object_weight, self.mnp_fn_max)[0]
 
             edge = RRTEdge(x_near, mnps, envs, path, mode)
             edge.manipulator_collide = status_mnp_collide
             edge.score = stability_margin_score
+            edge.paths = paths
 
         return x_new, status, edge, stability_margin_score
 
@@ -711,7 +757,7 @@ class RRTManipulationStability(object):
                     x_new, status, edge, score = self.extend_w_mode(0, x_near, x_rand, m, v, v_)
                 else:
                     x_new, status, edge, score = self.extend_w_mode_changemnp(0, x_near, x_rand, m, v, v_)
-                if status != Status.TRAPPED and self.dist(x_new, self.get_nearest(0, x_new)) > 1e-3:
+                if status != Status.TRAPPED and self.dist(x_new, self.get_nearest(0, x_new)) > 1e-3:# and score >=0:
                     self.trees[0].add(x_new, edge)
                     self.samples_taken += 1
                     print('sample ', self.samples_taken, ', x: ', x_new, 'mode', m, 'score', score)

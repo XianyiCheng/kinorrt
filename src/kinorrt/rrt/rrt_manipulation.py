@@ -417,14 +417,16 @@ class RRTManipulation(object):
             finger_mode = finger_mode[remain_idx]
             mode = list(finger_mode) + mode[cm:]
 
-        while np.linalg.norm(v_star_proj) > 1e-2 and counter < max_counter:
+        while np.linalg.norm(v_star) > 1e-2 and counter < max_counter:
             g_v = np.identity(3)
             g_v[0:2, 0:2] = config2trans(x)[0:2, 0:2]
             counter += 1
             # v = self.inverse_mechanics(x, v_star, envs, mnps, mode)
-            v = self.inverse_mechanics(x, v_star_proj, envs, mnps, mode)
+            v = self.inverse_mechanics(x, v_star, envs, mnps, mode)
             if np.linalg.norm(v) < 1e-3:
-                break
+                v = self.inverse_mechanics(x, v_star_proj, envs, mnps, mode)
+                if np.linalg.norm(v) < 1e-3:
+                    break
 
             # finger mode
             for i_finger in range(len(mnps)):
@@ -487,6 +489,9 @@ class RRTManipulation(object):
                 k_new = 1 - d_max / abs(np.dot(v_p_max[0:2], n_max))
                 if abs(k_new) < 1:
                     v = k_new * v
+                    x = x + np.dot(g_v, v).flatten()
+                    path.append(tuple(x))
+                elif d_max < 0.07:
                     x = x + np.dot(g_v, v).flatten()
                     path.append(tuple(x))
                 break

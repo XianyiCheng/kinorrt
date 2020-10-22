@@ -333,11 +333,11 @@ class iTM2d(Application):
         if self.visualize:
             # Draw object.
             glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
-            for i in range(len(self.key_path)):
+            for i in range(len(self.path)):
                 new_m = point_manipulator()
 
-                self.config = self.key_path[i]
-                self.manip_p = self.key_mnp_path[i]
+                self.config = self.path[i]
+                self.manip_p = self.mnp_path[i]
                 glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
                 if self.manip_p is not None:
                     for mnp in self.manip_p:
@@ -438,7 +438,7 @@ class iTM2d(Application):
             self.camera.mouse_zoom(x, y)
 
     def get_path(self, paths):
-        self.path, self.mnp_path, self.key_path, self.key_mnp_path = paths
+        self.path, self.mnp_path = paths
 
     def get_nodes(self, nodes):
         self.nodes = nodes
@@ -488,19 +488,20 @@ def test_kinorrt_cases(stability_solver, max_samples = 100):
 
     t_start = time.time()
     paths = rrt_tree.search()
+    stability_solver.save_hvfc_params_path(paths)
     t_end = time.time()
     print('time:', t_end - t_start)
 
-    app.get_path(paths)
+    app.get_path((paths[0],paths[2]))
     app.get_nodes(rrt_tree.trees[0].nodes)
     app.get_tree(rrt_tree)
     viewer.start()
 
-    return t_end - t_start, len(paths[2])
+    return t_end - t_start
 
-stability_solver = StabilityMarginSolver()
+stability_solver = StabilityMarginSolver_matlab()
 times = []
-for i in range(10):
+for i in [2]:
     seed_number = i*1000
     random.seed(seed_number)
     np.random.seed(seed_number)

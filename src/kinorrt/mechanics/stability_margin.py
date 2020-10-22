@@ -1,3 +1,6 @@
+import os
+os.environ['PREHENSILE_MANIPULATION_PATH'] = '/home/xianyi/libraries/prehensile_manipulation'
+
 import wrenchStampingLib as ws
 import matlab.engine
 from .mechanics import *
@@ -12,6 +15,21 @@ def modes_to_int(modes):
     modes_int[modes == CONTACT_MODE.SLIDING_RIGHT] = 2
     modes_int[modes == CONTACT_MODE.SLIDING_LEFT] = 3
     return modes_int
+
+class StabilityMarginSolver_None():
+    def __init__(self):
+        pass
+
+    def preprocess(self, x, env_mu, mnp_mu, envs, mnps, e_modes, h_modes, obj_weight, mnp_fn_max, kCharacteristicLength = 0.15):
+
+        return 0.0
+
+
+    def stability_margin(self, preprocess_params, vo, mode):
+
+        return 0.0
+
+
 
 class StabilityMarginSolver():
     def __init__(self):
@@ -194,3 +212,187 @@ class StabilityMarginSolver():
         stability_margin_score = self.stability_margin(preprocess, v, mode)
         print(stability_margin_score)
         return stability_margin_score, preprocess, v, mode
+
+    def hvfc_params_path(self, paths):
+        path, velocity_path, mnp_path, env_path, mode_path = paths
+        n = len(path)
+        params_path = []
+        for i in range(n):
+            x = path[i]
+            v = velocity_path[i]
+            mode = mode_path[i]
+            mnps = mnp_path[i]
+            envs = env_path[i]
+
+            mode = modes_to_int(mode).astype('int32')
+
+            #h_mode_goal = mode[0:len(mnps)].reshape(-1, 1)
+            e_mode_goal = mode[len(mnps):].reshape(-1, 1)
+            e_modes = np.array(get_contact_modes([], envs))
+            e_modes = e_modes[~np.all(e_modes == CONTACT_MODE.LIFT_OFF, axis=1)]
+
+            params_path.append((Je, Jh, eCone_allFix, hCone_allFix, F_G, G, b_G, e_modes, e_mode_goal))
+
+        return params_path
+
+
+class StabilityMarginSolver_matlab():
+    def __init__(self):
+        self.print_level=0 # 0: minimal screen outputs
+
+        self.eng = matlab.engine.start_matlab()
+        # self.eng.addpath('/home/xianyi/Documents/MATLAB/tbxmanager')
+        #self.eng.startup(nargout=0)
+        root = '/home/xianyi/libraries/prehensile_manipulation/matlab'
+        self.eng.addpath(root)
+        self.eng.addpath(root + '/utilities')
+        self.eng.addpath(root + '/matlablibrary')
+        self.eng.addpath(root + '/matlablibrary/Math/motion')
+        self.eng.addpath(root + '/matlablibrary/Math/geometry')
+        self.eng.addpath(root + '/matlablibrary/Math/array')
+        self.eng.addpath(root + '/matlablibrary/Mesh/cone')
+        #self.eng.addpath('/home/xianyi/libraries/contact_mode_enumeration_2d')
+        # self.eng.supress_warning(nargout=0)
+        a = -np.pi/6
+        self.R_WH = np.array([[np.cos(a), -np.sin(a)],[np.sin(a), np.cos(a)]])
+
+
+    def compute_stability_margin(self, x, v, env_mu, mnp_mu, envs, mnps, mode,
+                                 e_modes, h_modes, obj_weight, mnp_fn_max, kCharacteristicLength=0.15):
+        if sum(np.array(mode)==CONTACT_MODE.LIFT_OFF) == 2\
+                and sum(np.array(mode)==CONTACT_MODE.SLIDING_LEFT)==2:
+            print('debug')
+        if x[2] > 2 and sum(np.array(mode)==CONTACT_MODE.SLIDING_LEFT) == 2:
+            print('debug')
+        kFrictionE = env_mu
+        kFrictionH = mnp_mu
+        kContactForce = mnp_fn_max
+        kObjWeight = obj_weight
+
+        e_modes = modes_to_int(e_modes).astype('int32')
+        h_modes = modes_to_int(h_modes).astype('int32')
+
+        # Make contact info.
+        Ad_gcos, depths, mus = contact_info(mnps, envs, mnp_mu, env_mu)
+
+        g_wo = twist_to_transform(x)
+        R_WO = g_wo[0:2, 0:2]
+        p_WO = g_wo[0:2, -1].reshape(-1, 1)
+        CP_W_G = p_WO
+
+        p_O_e = np.array([c.p for c in envs]).T
+        n_O_e = np.array([c.n for c in envs]).T
+        p_W_e = np.dot(R_WO, p_O_e) + p_WO
+        n_W_e = np.dot(R_WO, n_O_e)
+
+        p_OH = np.array(mnps[0].p).reshape(-1, 1)
+        R_OH = np.dot(R_WO.T, self.R_WH)
+        goh = np.eye(3)
+        goh[0:2, 0:2] = R_OH
+        goh[0:2, -1] = p_OH.reshape(-1)
+        Adgoh = adjoint(goh)
+
+        p_H_h = np.zeros((2, 1))
+        # n_H_h = np.array([[0],[-1]])
+        R_OM = Ad_gcos[0][0:2, 0:2].T
+        R_HM = np.dot(R_OH.T, R_OM)
+        n_H_h = np.dot(R_HM, np.array([[0], [1]]))
+        # R_WH = np.dot(R_WO, R_OH)
+
+        # p_WH = p_WO + np.dot(R_WO,np.array(mnps[0].p))
+
+        kNumSlidingPlanes = 1  # for 2D planar problems
+        jacs = self.eng.preProcessing(matlab.double([kFrictionE]),
+                                      matlab.double([kFrictionH]),
+                                      matlab.double([kNumSlidingPlanes]),
+                                      matlab.double([kObjWeight]),
+                                      matlab.double(p_O_e.tolist()),
+                                      matlab.double(n_O_e.tolist()),
+                                      matlab.double(p_H_h.tolist()),
+                                      matlab.double(n_H_h.tolist()),
+                                      matlab.double(R_OH.tolist()),
+                                      matlab.double(p_OH.tolist()),
+                                      matlab.double(CP_W_G.tolist()), nargout=9)
+
+        N_e = np.asarray(jacs[0])
+        T_e = np.asarray(jacs[1])
+        N_h = np.asarray(jacs[2])
+        T_h = np.asarray(jacs[3])
+        eCone_allFix = np.asarray(jacs[4])
+        # eTCone_allFix = np.asarray(jacs[5])
+        hCone_allFix = np.asarray(jacs[6])
+        # hTCone_allFix = np.asarray(jacs[7])
+        # F_G = np.asarray(jacs[8])
+        # Add gravity.
+        F_O = np.zeros(3)
+        f_o = obj_weight*np.array([0.0,-1.0])
+        g_ow = np.linalg.inv(twist_to_transform(x))
+        F_O[0:2] = np.dot(g_ow[0:2,0:2], f_o)
+        F_G = np.dot(Adgoh.T, F_O)
+        F_G = F_G.reshape(-1,1)
+
+        J_e = np.vstack((N_e, T_e))
+        J_h = np.vstack((N_h, T_h))
+
+        mode = modes_to_int(mode).astype('int32')
+
+        h_mode_goal = mode[0:h_modes.shape[1]].reshape(-1, 1)
+        e_mode_goal = mode[h_modes.shape[1]:].reshape(-1, 1)
+
+        Adgwo = adjoint(g_wo)
+        vs_w = np.dot(Adgwo, v)
+        Adghw = adjoint(np.linalg.inv(np.dot(g_wo, goh)))
+        vs_h = np.dot(Adghw, vs_w)
+
+        vs_h[abs(vs_h) < 1e-5] = 0
+
+        G = np.zeros((4,6))
+        G[0:3, 0:3] = np.identity(3)
+        G[3,5] = 1
+        b_G = np.array(vs_h)
+        idx = np.argmax(abs(b_G[0:2]))
+        b_G = np.array((b_G[idx],0)).reshape(-1, 1)
+        G = G[[idx,3]]
+        G = G.reshape(2,-1)
+
+        result = ws.wrenchSpaceAnalysis_2d(J_e, J_h, eCone_allFix, hCone_allFix, F_G,
+                                                     kContactForce, kFrictionE, kFrictionH, kCharacteristicLength,
+                                                     G, b_G, e_modes, h_modes, e_mode_goal, h_mode_goal)
+
+        return np.hstack((result, p_OH.reshape(-1)))
+
+
+
+    def save_hvfc_params_path(self, paths, filename='hfvc_traj.csv'):
+        env_mu = 0.3
+        mnp_mu = 0.8
+        obj_weight = 10
+        mnp_fn_max = 100
+        h_modes = np.array([[CONTACT_MODE.STICKING],[CONTACT_MODE.LIFT_OFF],[CONTACT_MODE.SLIDING_RIGHT]])
+
+        path, velocity_path, mnp_path, env_path, mode_path = paths
+        n = len(path)
+        params_path = []
+        for i in range(n):
+            x = path[i]
+            v = velocity_path[i]
+            if np.linalg.norm(v) < 1e-4:
+                continue
+            mode = mode_path[i]
+            mnps = mnp_path[i]
+            envs = env_path[i]
+            # mode = modes_to_int(mode).astype('int32')
+
+            e_modes = np.array(get_contact_modes([], envs))
+            e_modes = e_modes[~np.all(e_modes == CONTACT_MODE.LIFT_OFF, axis=1)]
+
+            params = self.compute_stability_margin(x, v, env_mu, mnp_mu, envs, mnps, mode,
+                                 e_modes, h_modes, obj_weight, mnp_fn_max)
+
+
+            params_path.append(params)
+        params_path = np.array(params_path)
+        np.savetxt(filename, params_path, delimiter=',')
+        print(filename+' saved!')
+
+        return
